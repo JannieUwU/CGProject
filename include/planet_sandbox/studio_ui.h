@@ -12,6 +12,7 @@
 #include <array>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace planet_sandbox {
 
@@ -76,6 +77,24 @@ struct StudioFrameCache {
     bool preview = false;
 };
 
+// Disclosure state follows the visible hierarchy: closing a parent also
+// clears every descendant, including sample rows that are not currently drawn.
+struct StudioPixelDisclosure {
+    bool details = false;
+    bool history = false;
+    bool background = false;
+    bool shading = false;
+    bool resolve = false;
+    std::vector<bool> samples;
+
+    void close_shading() { shading = false; samples.clear(); }
+    void close_history() {
+        history = background = resolve = false;
+        close_shading();
+    }
+    void close_details() { details = false; close_history(); }
+};
+
 struct StudioState {
     StudioState(Project project, const std::string& project_path);
 
@@ -109,6 +128,13 @@ struct StudioState {
     int selected_pixel_x = -1;
     int selected_pixel_y = -1;
     int pixel_region_size = 9;
+    StudioPixelDisclosure pixel_disclosure;
+    // Body, requested pixel, Inspect/Compare, and sampling modes. Render refreshes
+    // do not change this target, so timing and animation cannot close the panel.
+    std::array<int, 8> pixel_inspector_target{};
+    int trace_event_index = 0;
+    int trace_event_x = -1, trace_event_y = -1;
+    SamplingMode trace_event_sampling = SamplingMode::Single;
     bool select_pixel_tab = false;
     bool pixel_tab_active = false;
     bool design_tab_active = true;
@@ -150,6 +176,7 @@ struct StudioPixelRegion {
 };
 StudioPixelRegion studio_pixel_region(const RenderFrame& frame, int pixel_x, int pixel_y,
                                       int cells);
+void draw_pixel_process(StudioState& state, const PixelTrace& trace);
 
 StudioWorkflow studio_workflow(const StudioState& state);
 std::vector<StudioBodyMarker> studio_body_markers(const RenderFrame& frame, int body_count);
@@ -157,7 +184,8 @@ bool studio_scene_annotations_visible(const StudioState& state);
 
 StudioRenderInput make_studio_render_input(const StudioState& state);
 RenderFrame render_studio_frame(const StudioState& state, const StudioRenderInput& input);
-// Reuses the displayed frame for timing, then caches it once the measurement is complete.
+// Uses displayed renders for timing (process recording off), then restores the
+// selected pixel's detailed history with one untimed render and caches it.
 const RenderFrame& update_studio_frame(StudioState& state, const StudioRenderInput& input,
                                        double now_seconds);
 void activate_studio_preset(StudioState& state, DemoPreset preset);

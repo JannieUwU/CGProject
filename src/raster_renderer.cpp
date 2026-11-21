@@ -2,6 +2,7 @@
 #include "planet_sandbox/sculpt.h"
 #include "planet_sandbox/texture.h"
 #include "planet_sandbox/planet_visual.h"
+#include "triangle_coverage.h"
 
 #include <algorithm>
 #include <array>
@@ -24,9 +25,7 @@ int sampling_count(SamplingMode mode) {
 }
 
 Vec2 sample_offset(int sample_count, int sample) {
-    if (sample_count == 1) return {0.5, 0.5};
-    const int side = sample_count == 16 ? 4 : 2;
-    return {(sample % side + 0.5) / side, (sample / side + 0.5) / side};
+    return raster_detail::sample_offset(sample_count, sample);
 }
 
 TraceSurface geometry_surface(TraceSurface surface) {
@@ -303,10 +302,6 @@ Color surface_color(const Material& material, double u, double v, Vec3 normal, V
     return scale(color, material.emissive ? 0.92 + 0.08 * diffuse : 0.22 + 0.78 * diffuse);
 }
 
-double edge(double ax, double ay, double bx, double by, double px, double py) {
-    return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
-}
-
 enum class FragmentBlend { Opaque, Alpha, Cloud };
 
 struct Fragment {
@@ -356,6 +351,106 @@ Fragment shade_fragment(const Material& material, double u, double v, Vec3 norma
                  : surface_color(material, u, v, normal, world, view), 1.0, FragmentBlend::Opaque};
 }
 
+struct InterpolatedPoint {
+    double depth=0,u=0,v=0;
+    Vec3 normal{},world{};
+    bool valid=false;
+};
+
+// The receiving sample already has this exact perspective depth from its
+// depth test. Reuse it without reassociating the attribute arithmetic.
+InterpolatedPoint interpolate_point_at_depth(const std::array<ScreenVertex,3>& p,
+                                             const std::array<double,3>& w,double depth) {
+    InterpolatedPoint out;
+    out.depth=depth;
+    const auto interpolate=[&](double a,double b,double c) {
+        return (w[0]*a/p[0].depth+w[1]*b/p[1].depth+w[2]*c/p[2].depth)*out.depth;
+    };
+    out.u=interpolate(p[0].u,p[1].u,p[2].u);out.v=interpolate(p[0].v,p[1].v,p[2].v);
+    const Vec3 normal{interpolate(p[0].normal.x,p[1].normal.x,p[2].normal.x),
+                      interpolate(p[0].normal.y,p[1].normal.y,p[2].normal.y),
+                      interpolate(p[0].normal.z,p[1].normal.z,p[2].normal.z)};
+    out.world={interpolate(p[0].position.x,p[1].position.x,p[2].position.x),
+               interpolate(p[0].position.y,p[1].position.y,p[2].position.y),
+               interpolate(p[0].position.z,p[1].position.z,p[2].position.z)};
+    const auto finite=[](Vec3 v){return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);};
+    out.valid=std::isfinite(out.depth)&&std::isfinite(out.u)&&std::isfinite(out.v)&&
+              finite(normal)&&dot(normal,normal)>0&&std::isfinite(dot(normal,normal))&&finite(out.world);
+    out.normal=normalize(normal);
+    return out;
+}
+
+InterpolatedPoint interpolate_point(const std::array<ScreenVertex,3>& p,const std::array<double,3>& w) {
+    const double inverse=w[0]/p[0].depth+w[1]/p[1].depth+w[2]/p[2].depth;
+    if(!std::isfinite(inverse) || inverse<=0) return {};
+    return interpolate_point_at_depth(p,w,1/inverse);
+}
+
+struct MsaaPoint {
+    Vec2 position{};
+    InterpolatedPoint attributes;
+    TraceShadingLocation location=TraceShadingLocation::PixelCenter;
+    TracePointIssue center_issue=TracePointIssue::None,centroid_issue=TracePointIssue::None;
+};
+using MsaaWeights=std::array<std::array<double,3>,4>;
+
+// This selector deliberately has no depth buffer or depth-passed mask input.
+// Averaging affine SCREEN weights evaluates the geometric mean point without
+// snapping a rational centroid back to the integer coverage grid.
+std::pair<Vec2,std::array<double,3>> coverage_centroid(unsigned mask,const MsaaWeights& weights) {
+    Vec2 position{};std::array<double,3> w{};int count=0;
+    for(int s=0;s<4;++s) if(mask&(1u<<s)) {
+        const auto offset=sample_offset(4,s);position.x+=offset.x;position.y+=offset.y;
+        for(int k=0;k<3;++k) w[k]+=weights[s][k];
+        ++count;
+    }
+    if(count) {position.x/=count;position.y/=count;for(auto& value:w) value/=count;}
+    return {position,w};
+}
+
+bool choose_msaa_point(const raster_detail::TriangleCoverage& coverage,const std::array<ScreenVertex,3>& p,
+                       Vec3 camera,bool cloud,int x,int y,unsigned mask,const MsaaWeights& weights,MsaaPoint& out) {
+    if(!mask) return false;
+    const auto evaluate=[&](const std::array<double,3>& w,InterpolatedPoint& attributes) {
+        for(double v:w) if(!std::isfinite(v)||v<0) return TracePointIssue::InvalidInterpolation;
+        attributes=interpolate_point(p,w);
+        if(!attributes.valid) return TracePointIssue::InvalidInterpolation;
+        if(cloud && dot(attributes.normal,camera-attributes.world)<=0) return TracePointIssue::BackFacing;
+        return TracePointIssue::None;
+    };
+    constexpr auto scale=raster_detail::subpixel_scale;
+    std::array<double,3> center{};
+    out.position={.5,.5};out.location=TraceShadingLocation::PixelCenter;
+    // The four covered sample positions surround the center. Convexity proves
+    // center ownership, and their affine weights average to center weights.
+    // Avoid an extra arbitrary-precision edge query for large full-coverage faces.
+    bool center_covered=mask==15;
+    if(center_covered) {
+        for(int s=0;s<4;++s) for(int k=0;k<3;++k) center[k]+=weights[s][k]*.25;
+    } else center_covered=coverage.weights(std::int64_t(x)*scale+scale/2,std::int64_t(y)*scale+scale/2,center);
+    out.center_issue=center_covered
+        ? evaluate(center,out.attributes) : TracePointIssue::OutsideCoverage;
+    if(out.center_issue==TracePointIssue::None) return true;
+    const auto centroid=coverage_centroid(mask,weights);
+    out.position=centroid.first;out.location=TraceShadingLocation::CoverageCentroid;
+    out.centroid_issue=evaluate(centroid.second,out.attributes);
+    if(out.centroid_issue==TracePointIssue::None) return true;
+    // Distances tie for the current 2x2 layout; canonical sample order breaks
+    // ties. Keep the explicit distance comparison if the layout later changes.
+    double closest=std::numeric_limits<double>::infinity();bool found=false;
+    for(int s=0;s<4;++s) if(mask&(1u<<s)) {
+        InterpolatedPoint candidate;
+        if(evaluate(weights[s],candidate)!=TracePointIssue::None) continue;
+        const auto position=sample_offset(4,s);
+        const double distance=(position.x-.5)*(position.x-.5)+(position.y-.5)*(position.y-.5);
+        if(distance<closest) {
+            closest=distance;found=true;out.position=position;out.attributes=candidate;
+            out.location=TraceShadingLocation::CoveredSample;
+        }
+    }
+    return found;
+}
+
 class Rasterizer {
 public:
     Rasterizer(const Project& project, const RenderConfig& config)
@@ -384,6 +479,11 @@ public:
                 }
             }
         }
+        if (config_.trace_process && config_.trace_x >= 0) {
+            const auto pixel = static_cast<std::size_t>(config_.trace_y) * config_.width + config_.trace_x;
+            for (int s = 0; s < sample_count_; ++s)
+                initial_samples_.push_back(snapshot_sample(samples_[pixel * sample_count_ + s], s));
+        }
     }
 
     double camera_depth(Vec3 world) const {
@@ -409,6 +509,7 @@ public:
 
     void triangle(const std::array<Vertex, 3>& vertices, const Material& material,
                   int body_index, bool ring) {
+        const auto triangle_id = next_triangle_id_++;
         std::array<double, 3> depths{};
         int inside_count = 0;
         for (int i = 0; i < 3; ++i) {
@@ -418,7 +519,7 @@ public:
         }
         if (inside_count == 0) return;
         if (inside_count == 3) {
-            rasterize_triangle(vertices, material, body_index, ring);
+            rasterize_triangle(vertices, material, body_index, ring, triangle_id, 0);
             return;
         }
         std::array<Vertex, 4> clipped{};
@@ -428,10 +529,14 @@ public:
             const bool current_inside = depths[i] >= near_plane;
             const bool previous_inside = depths[previous] >= near_plane;
             if (current_inside != previous_inside) {
-                const double t = std::clamp((near_plane - depths[previous]) /
-                                                (depths[i] - depths[previous]), 0.0, 1.0);
-                const Vertex& a = vertices[previous];
-                const Vertex& b = vertices[i];
+                // Always interpolate outside -> inside. Reversed shared edges
+                // now produce bit-identical positions before screen snapping.
+                const int outside = current_inside ? previous : i;
+                const int inside = current_inside ? i : previous;
+                const double t = std::clamp((near_plane - depths[outside]) /
+                                                (depths[inside] - depths[outside]), 0.0, 1.0);
+                const Vertex& a = vertices[outside];
+                const Vertex& b = vertices[inside];
                 clipped[count++] = {a.position + (b.position - a.position) * t,
                                     a.normal + (b.normal - a.normal) * t,
                                     a.u + (b.u - a.u) * t,
@@ -441,13 +546,144 @@ public:
         }
         for (int i = 1; i + 1 < count; ++i) {
             rasterize_triangle({clipped[0], clipped[i], clipped[i + 1]},
-                               material, body_index, ring);
+                               material, body_index, ring, triangle_id, i - 1);
         }
     }
 
 private:
+    static std::array<double, 3> rgb(Color c) { return {c.r, c.g, c.b}; }
+
+    TraceSample snapshot_sample(const Sample& sample, int s) const {
+        return {sample_offset(sample_count_, s), sample.body, sample.depth,
+                rgb(sample.color), sample.surface};
+    }
+
+    // Called only after geometric coverage succeeds. Allocate nothing for other
+    // pixels or for timing renders. Each event snapshots all samples before its
+    // first write so uncovered/depth-rejected samples remain explainable too.
+    TraceSampleStep* record_coverage(TraceEvent*& event, int x, int y, int s,
+                                    TracePrimitive primitive, std::uint64_t id,
+                                    int body, TraceSurface surface, int part = 0) {
+        if (!config_.trace_process || x != config_.trace_x || y != config_.trace_y) return nullptr;
+        if (!event) {
+            if (events_.size() >= PixelTrace::max_events) {
+                process_truncated_ = true;
+                return nullptr;
+            }
+            events_.emplace_back();
+            event = &events_.back();
+            event->primitive = primitive;
+            event->primitive_id = id;
+            event->clipped_part = part;
+            event->body_index = body;
+            event->surface = surface;
+            event->samples.resize(sample_count_);
+            const auto pixel = static_cast<std::size_t>(y) * config_.width + x;
+            for (int n = 0; n < sample_count_; ++n) {
+                auto& step = event->samples[n];
+                step.before = step.after = snapshot_sample(samples_[pixel * sample_count_ + n], n);
+                step.blend_base_rgb = step.before.linear_rgb;
+            }
+        }
+        auto& step = event->samples[s];
+        step.covered = true;
+        return &step;
+    }
+
+    static void record_depth(TraceSampleStep* step, double depth, double previous) {
+        if (!step) return;
+        step->candidate_depth = depth;
+        step->depth_test = depth >= previous ? TraceDepthTest::Rejected : TraceDepthTest::Passed;
+        if (step->depth_test == TraceDepthTest::Rejected) step->action = TraceAction::DepthRejected;
+    }
+
+    void rasterize_msaa_pixel(const raster_detail::TriangleCoverage& coverage,const std::array<ScreenVertex,3>& p,
+                              const Material& material,int body_index,bool ring,std::uint64_t triangle_id,
+                              int part,int x,int y) {
+        // Only covered entries are read. Defer the larger attribute storage
+        // until at least one sample passes depth; most bounding-box pixels do not.
+        MsaaWeights weights;
+        std::array<double,4> depths;
+        unsigned covered=0,depth_passed=0,receivers=0;
+        TraceEvent* event=nullptr;
+        const bool cloud=material.cloud_pass||material.venus_cloud_pass;
+        const auto surface=ring?TraceSurface::Ring:cloud?TraceSurface::Cloud:TraceSurface::Body;
+        const auto pixel=(static_cast<std::size_t>(y)*config_.width+x)*4;
+        constexpr auto scale=raster_detail::subpixel_scale;
+        for(int s=0;s<4;++s) {
+            const auto offset=sample_offset(4,s);
+            if(!coverage.weights(std::int64_t(x)*scale+std::int64_t(offset.x*scale),
+                                 std::int64_t(y)*scale+std::int64_t(offset.y*scale),weights[s])) continue;
+            covered|=1u<<s;
+            auto* step=record_coverage(event,x,y,s,TracePrimitive::Triangle,triangle_id,body_index,surface,part);
+            const auto& w=weights[s];
+            const double depth=1/(w[0]/p[0].depth+w[1]/p[1].depth+w[2]/p[2].depth);
+            if(!std::isfinite(depth)||depth<=0) {if(step) step->action=TraceAction::InvalidAttributes;continue;}
+            depths[s]=depth;
+            record_depth(step,depth,samples_[pixel+s].depth);
+            if(depth>=samples_[pixel+s].depth) continue;
+            depth_passed|=1u<<s;
+        }
+        if(!depth_passed) return;
+        MsaaPoint point;
+        const bool has_point=choose_msaa_point(coverage,p,camera_position_,cloud,x,y,covered,weights,point);
+        std::array<InterpolatedPoint,4> attributes;
+        for(int s=0;s<4;++s) if(depth_passed&(1u<<s)) {
+            auto* step=event?&event->samples[s]:nullptr;
+            auto& at=attributes[s];const auto offset=sample_offset(4,s);
+            at.depth=depths[s];
+            if(has_point && offset.x==point.position.x && offset.y==point.position.y) at=point.attributes;
+            else if(cloud) at=interpolate_point_at_depth(p,weights[s],depths[s]);
+            else {
+                // Non-cloud sample writes need their own depth/UV, but normals
+                // and world positions are needed only at the shared shader point.
+                const auto& w=weights[s];
+                at.u=(w[0]*p[0].u/p[0].depth+w[1]*p[1].u/p[1].depth+w[2]*p[2].u/p[2].depth)*at.depth;
+                at.v=(w[0]*p[0].v/p[0].depth+w[1]*p[1].v/p[1].depth+w[2]*p[2].v/p[2].depth)*at.depth;
+                at.valid=std::isfinite(at.u)&&std::isfinite(at.v);
+            }
+            if(!at.valid) {if(step) step->action=TraceAction::InvalidAttributes;continue;}
+            if(cloud && dot(at.normal,camera_position_-at.world)<=0) {
+                if(step) step->action=TraceAction::BackfaceRejected;
+                continue;
+            }
+            receivers|=1u<<s;
+        }
+        if(!receivers) return;
+        if(!has_point) {
+            if(event) {
+                event->shading_failure=TracePointIssue::NoValidCoveredPoint;
+                for(int s=0;s<4;++s) if(receivers&(1u<<s)) event->samples[s].action=TraceAction::InvalidAttributes;
+            }
+            return;
+        }
+        const auto& at=point.attributes;
+        const auto fragment=shade_fragment(material,at.u,at.v,at.normal,at.world,
+                                           normalize(camera_position_-at.world),ring);
+        ++shade_evaluations_;
+        if(event) event->shading.push_back({point.position,rgb(fragment.color),fragment.alpha,
+                                           point.location,point.center_issue,point.centroid_issue});
+        for(int s=0;s<4;++s) if(receivers&(1u<<s)) {
+            auto& sample=samples_[pixel+s];auto* step=event?&event->samples[s]:nullptr;
+            if(step) {
+                step->shading_index=0;step->source_rgb=rgb(fragment.color);step->alpha=fragment.alpha;
+                step->blend=fragment.blend==FragmentBlend::Cloud?TraceBlend::CloudBase:
+                    fragment.blend==FragmentBlend::Alpha?TraceBlend::Alpha:TraceBlend::Replace;
+            }
+            if(fragment.alpha<=0) {if(step) step->action=TraceAction::Transparent;continue;}
+            if(fragment.blend==FragmentBlend::Cloud) {
+                blend_cloud(pixel+s,sample,fragment.color,fragment.alpha);
+                if(step) {const auto& base=cloud_bases_[pixel+s];step->blend_base_rgb={base.r,base.g,base.b};}
+            } else if(fragment.blend==FragmentBlend::Alpha) sample.color=mix(sample.color,fragment.color,fragment.alpha);
+            else sample.color=fragment.color;
+            sample.depth=attributes[s].depth;sample.body=body_index;
+            sample.surface_uv=ring?Vec2{-1,-1}:Vec2{attributes[s].u,attributes[s].v};sample.surface=surface;
+            if(step) {step->action=TraceAction::Written;step->after=snapshot_sample(sample,s);}
+        }
+    }
+
     void rasterize_triangle(const std::array<Vertex, 3>& vertices, const Material& material,
-                            int body_index, bool ring) {
+                            int body_index, bool ring, std::uint64_t triangle_id, int part) {
         std::array<ScreenVertex, 3> p{};
         for (int i = 0; i < 3; ++i) {
             if (!project(vertices[i].position, p[i])) return;
@@ -456,12 +692,11 @@ private:
             p[i].u = vertices[i].u;
             p[i].v = vertices[i].v;
         }
-        const double area = edge(p[0].x, p[0].y, p[1].x, p[1].y, p[2].x, p[2].y);
-        if (!std::isfinite(area) || std::abs(area) < 1e-10) return;
-        const double left = std::min({p[0].x, p[1].x, p[2].x});
-        const double right = std::max({p[0].x, p[1].x, p[2].x});
-        const double top = std::min({p[0].y, p[1].y, p[2].y});
-        const double bottom = std::max({p[0].y, p[1].y, p[2].y});
+        const raster_detail::TriangleCoverage coverage({{{p[0].x,p[0].y},
+                                                       {p[1].x,p[1].y}, {p[2].x,p[2].y}}});
+        if (!coverage.valid()) return;
+        const double left = coverage.minimum().x, right = coverage.maximum().x;
+        const double top = coverage.minimum().y, bottom = coverage.maximum().y;
         if (right < 0.0 || bottom < 0.0 || left >= config_.width || top >= config_.height) return;
         const int min_x = static_cast<int>(std::floor(std::clamp(left, 0.0, double(config_.width - 1))));
         const int max_x = static_cast<int>(std::ceil(std::clamp(right, 0.0, double(config_.width - 1))));
@@ -469,21 +704,30 @@ private:
         const int max_y = static_cast<int>(std::ceil(std::clamp(bottom, 0.0, double(config_.height - 1))));
         for (int y = min_y; y <= max_y; ++y) {
             for (int x = min_x; x <= max_x; ++x) {
+                if(config_.sampling==SamplingMode::MSAA4) {
+                    rasterize_msaa_pixel(coverage,p,material,body_index,ring,triangle_id,part,x,y);
+                    continue;
+                }
                 Fragment cached_fragment;
                 bool cached = false;
+                TraceEvent* event = nullptr;
                 for (int s = 0; s < sample_count_; ++s) {
                     const Vec2 offset = sample_offset(sample_count_, s);
-                    const double sx = x + offset.x;
-                    const double sy = y + offset.y;
-                    const double w0 = edge(p[1].x, p[1].y, p[2].x, p[2].y, sx, sy) / area;
-                    const double w1 = edge(p[2].x, p[2].y, p[0].x, p[0].y, sx, sy) / area;
-                    const double w2 = 1.0 - w0 - w1;
-                    if (w0 < -1e-9 || w1 < -1e-9 || w2 < -1e-9) continue;
+                    constexpr auto scale = raster_detail::subpixel_scale;
+                    std::array<double, 3> weights;
+                    if (!coverage.weights(std::int64_t(x)*scale + std::int64_t(offset.x*scale),
+                                          std::int64_t(y)*scale + std::int64_t(offset.y*scale), weights)) continue;
+                    const double w0 = weights[0], w1 = weights[1], w2 = weights[2];
+                    auto* step = record_coverage(event, x, y, s, TracePrimitive::Triangle,
+                        triangle_id, body_index, ring ? TraceSurface::Ring :
+                        (material.cloud_pass || material.venus_cloud_pass)
+                            ? TraceSurface::Cloud : TraceSurface::Body, part);
                     const double inverse_depth = w0 / p[0].depth + w1 / p[1].depth + w2 / p[2].depth;
                     const double depth = 1.0 / inverse_depth;
                     const std::size_t sample_index =
                         (static_cast<std::size_t>(y) * config_.width + x) * sample_count_ + s;
                     Sample& sample = samples_[sample_index];
+                    record_depth(step, depth, sample.depth);
                     if (depth >= sample.depth) continue;
                     const auto interpolate = [&](double a, double b, double c) {
                         return (w0 * a / p[0].depth + w1 * b / p[1].depth +
@@ -498,17 +742,36 @@ private:
                                      interpolate(p[0].position.y, p[1].position.y, p[2].position.y),
                                      interpolate(p[0].position.z, p[1].position.z, p[2].position.z)};
                     if (material.cloud_pass || material.venus_cloud_pass) {
-                        if (dot(normal, camera_position_ - world) <= 0.0) continue;
+                        if (dot(normal, camera_position_ - world) <= 0.0) {
+                            if (step) step->action = TraceAction::BackfaceRejected;
+                            continue;
+                        }
                     }
                     if (!cached || config_.sampling != SamplingMode::MSAA4) {
                         cached_fragment = shade_fragment(material, u, v, normal, world,
                                                           normalize(camera_position_ - world), ring);
                         ++shade_evaluations_;
                         cached = true;
+                        if (event) event->shading.push_back({offset, rgb(cached_fragment.color),
+                                                            cached_fragment.alpha});
                     }
-                    if (cached_fragment.alpha <= 0.0) continue;
+                    if (step) {
+                        step->shading_index = static_cast<int>(event->shading.size()) - 1;
+                        step->source_rgb = rgb(cached_fragment.color);
+                        step->alpha = cached_fragment.alpha;
+                        step->blend = cached_fragment.blend == FragmentBlend::Cloud ? TraceBlend::CloudBase :
+                            cached_fragment.blend == FragmentBlend::Alpha ? TraceBlend::Alpha : TraceBlend::Replace;
+                    }
+                    if (cached_fragment.alpha <= 0.0) {
+                        if (step) step->action = TraceAction::Transparent;
+                        continue;
+                    }
                     if (cached_fragment.blend == FragmentBlend::Cloud) {
                         blend_cloud(sample_index, sample, cached_fragment.color, cached_fragment.alpha);
+                        if (step) {
+                            const auto& base = cloud_bases_[sample_index];
+                            step->blend_base_rgb = {base.r, base.g, base.b};
+                        }
                     } else if (cached_fragment.blend == FragmentBlend::Alpha) {
                         sample.color = mix(sample.color, cached_fragment.color, cached_fragment.alpha);
                     } else {
@@ -520,6 +783,10 @@ private:
                     sample.surface = ring ? TraceSurface::Ring :
                         (material.cloud_pass || material.venus_cloud_pass)
                             ? TraceSurface::Cloud : TraceSurface::Body;
+                    if (step) {
+                        step->action = TraceAction::Written;
+                        step->after = snapshot_sample(sample, s);
+                    }
                 }
             }
         }
@@ -571,6 +838,7 @@ public:
             for (int y = min_y; y <= max_y; ++y) {
                 for (int x = min_x; x <= max_x; ++x) {
                     const std::size_t pixel = static_cast<std::size_t>(y) * config_.width + x;
+                    TraceEvent* event = nullptr;
                     for (int s = 0; s < sample_count_; ++s) {
                         const Vec2 offset = sample_offset(sample_count_, s);
                         const double sx = x + offset.x;
@@ -580,8 +848,11 @@ public:
                             : start;
                         const double ox = sx - (a.x + dx * t), oy = sy - (a.y + dy * t);
                         if (ox * ox + oy * oy > 0.36) continue;
+                        auto* step = record_coverage(event, x, y, s, TracePrimitive::TrailSegment,
+                                                     segment, body_index, surface);
                         const double depth = 1.0 / ((1.0 - t) / a.depth + t / b.depth);
                         Sample& sample = samples_[pixel * sample_count_ + s];
+                        record_depth(step, depth, sample.depth);
                         if (depth >= sample.depth) continue;
                         sample.color = mix(sample.color, color,
                                            surface == TraceSurface::ReferenceTrail ? 0.5 : 0.65);
@@ -589,13 +860,20 @@ public:
                         sample.body = body_index;
                         sample.surface_uv = {-1.0, -1.0};
                         sample.surface = surface;
+                        if (step) {
+                            step->source_rgb = rgb(color);
+                            step->alpha = surface == TraceSurface::ReferenceTrail ? 0.5 : 0.65;
+                            step->blend = TraceBlend::Alpha;
+                            step->action = TraceAction::Written;
+                            step->after = snapshot_sample(sample, s);
+                        }
                     }
                 }
             }
         }
     }
 
-    void atmosphere(const Material& m) {
+    void atmosphere(const Material& m, int body_index) {
         if (!m.design || m.design->atmosphere_density <= 0 || m.kind == BodyKind::Mercury ||
             m.kind == BodyKind::Sun || m.kind == BodyKind::Custom || m.kind == BodyKind::Venus) return;
         const double scale_height = m.kind == BodyKind::Mars ? .004 : m.kind == BodyKind::Earth ? .008 : .006;
@@ -623,6 +901,7 @@ public:
                                Color{.12, .30, .48};
         for (int y = y0; y <= y1; ++y) for (int x = x0; x <= x1; ++x) {
             double cached_alpha = 0.0; Color cached_color{}; bool cached = false;
+            TraceEvent* event = nullptr;
             for (int s = 0; s < sample_count_; ++s) {
                 const Vec2 sub = sample_offset(sample_count_, s);
                 const Vec3 ray = normalize(view_direction_ * -1.0 +
@@ -630,12 +909,18 @@ public:
                     up_ * ((config_.height * .5 - y - sub.y) / image_scale_));
                 const double b = dot(offset, ray), discriminant = b * b - c;
                 if (discriminant <= 0) continue;
+                auto* trace_step = record_coverage(event, x, y, s, TracePrimitive::Atmosphere,
+                    static_cast<std::uint64_t>(body_index), body_index, TraceSurface::Atmosphere);
                 const double root = std::sqrt(discriminant);
                 const double forward = -dot(ray, view_direction_);
                 const double entry = std::max(near_plane / forward, -b - root);
                 Sample& sample = samples_[(static_cast<std::size_t>(y) * config_.width + x) * sample_count_ + s];
                 const double exit = std::min(-b + root, sample.depth / forward);
-                if (exit <= entry) continue;
+                if (trace_step) { trace_step->ray_entry = entry; trace_step->ray_exit = exit; }
+                if (exit <= entry) {
+                    if (trace_step) trace_step->action = TraceAction::Occluded;
+                    continue;
+                }
                 if (!cached || config_.sampling != SamplingMode::MSAA4) {
                     double column = 0, illumination = 0;
                     // Four short steps approximate a thin exponential scattering layer.
@@ -655,11 +940,25 @@ public:
                     cached_alpha = std::min(.32, 1 - std::exp(-depth * 1.6)) * sun;
                     cached_color = scale(daylight, .8 + .2 * phase);
                     ++shade_evaluations_; cached = true;
+                    if (event) event->shading.push_back({sub, rgb(cached_color), cached_alpha});
                 }
-                if (cached_alpha <= 0.00001) continue;
+                if (trace_step) {
+                    trace_step->shading_index = static_cast<int>(event->shading.size()) - 1;
+                    trace_step->source_rgb = rgb(cached_color);
+                    trace_step->alpha = cached_alpha;
+                    trace_step->blend = TraceBlend::Alpha;
+                }
+                if (cached_alpha <= 0.00001) {
+                    if (trace_step) trace_step->action = TraceAction::Transparent;
+                    continue;
+                }
                 sample.color = mix(sample.color, cached_color, cached_alpha);
                 // Scattering contributes color but cannot hide or select geometry.
                 if (sample.surface == TraceSurface::Background) sample.surface = TraceSurface::Atmosphere;
+                if (trace_step) {
+                    trace_step->action = TraceAction::Written;
+                    trace_step->after = snapshot_sample(sample, s);
+                }
             }
         }
     }
@@ -701,9 +1000,16 @@ public:
             PixelTrace trace;
             trace.x = config_.trace_x;
             trace.y = config_.trace_y;
+            trace.sampling = config_.sampling;
+            trace.process_recorded = config_.trace_process;
+            trace.process_truncated = process_truncated_;
+            trace.initial_samples = initial_samples_;
+            trace.events = events_;
+            Color resolved{};
             const std::size_t pixel = static_cast<std::size_t>(trace.y) * config_.width + trace.x;
             for (int s = 0; s < sample_count_; ++s) {
                 const Sample& sample = samples_[pixel * sample_count_ + s];
+                resolved = mix(resolved, sample.color, 1.0 / (s + 1));
                 trace.samples.push_back({sample_offset(sample_count_, s),
                                          sample.body, sample.depth,
                                          {sample.color.r, sample.color.g, sample.color.b},
@@ -711,6 +1017,7 @@ public:
             }
             trace.display_rgb = {frame.image.rgb[pixel * 3], frame.image.rgb[pixel * 3 + 1],
                                  frame.image.rgb[pixel * 3 + 2]};
+            trace.resolved_linear_rgb = rgb(resolved);
             frame.trace = std::move(trace);
         }
     }
@@ -731,6 +1038,10 @@ private:
     std::vector<CloudBase> cloud_bases_;
     std::uint32_t cloud_layer_ = 0;
     std::uint64_t shade_evaluations_ = 0;
+    std::uint64_t next_triangle_id_ = 0;
+    std::vector<TraceSample> initial_samples_;
+    std::vector<TraceEvent> events_;
+    bool process_truncated_ = false;
     Vec3 view_direction_{}, right_{}, up_{};
     Vec3 camera_position_{};
     double distance_ = 0.0;
@@ -1004,7 +1315,7 @@ RenderFrame render_scene(const Project& project, const SceneSnapshot& snapshot,
         Material material{spec.appearance, {}, {}, false};
         material.kind = spec.kind; material.design = &spec.design;
         configure(material, *atmosphere.body, atmosphere.scale_factor, false);
-        rasterizer.atmosphere(material);
+        rasterizer.atmosphere(material, atmosphere.index);
     }
     RenderFrame frame = rasterizer.resolve();
     frame.render_ms = std::chrono::duration<double, std::milli>(

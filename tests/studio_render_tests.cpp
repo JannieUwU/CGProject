@@ -221,6 +221,7 @@ static void test_async_measurement_has_fixed_quality_and_exact_sample_count() {
     std::atomic<int> renders{0};
     StudioRenderPipeline pipeline([&](const StudioRenderRequest& request) {
         assert(!request.preview && request.input.config.width == 32);
+        if (request.measuring) assert(!request.input.config.trace_process);
         ++renders;
         return render_comparison_scene(request.input.project, request.input.snapshot,
             request.input.config, request.left, request.right, request.right_first);
@@ -228,19 +229,23 @@ static void test_async_measurement_has_fixed_quality_and_exact_sample_count() {
     pump_until(pipeline, state, 0.0, [&] { return studio_frame_can_interact(state); });
     assert(state.measurement.waiting && renders == 1);
     pump_until(pipeline, state, 0.3, [&] { return state.measurement.ready; });
-    assert(renders == 15);
+    assert(renders >= 15 && renders <= 16); // Untimed history restore may already be in flight.
     assert(state.measurement.completed_runs == 14);
     assert(state.measurement.samples[0].size() == 11 && state.measurement.samples[1].size() == 11);
     assert(state.frame_cache.frame->panel_count == 2);
     const auto median = state.measurement.median_ms;
+    pump_until(pipeline, state, 0.4, [&] {
+        return state.frame_cache.frame->trace && state.frame_cache.frame->trace->process_recorded;
+    });
+    assert(renders == 16);
     for (int i = 0; i < 20; ++i) pipeline.update(state, make_studio_render_input(state), 0.4);
-    assert(renders == 15);
+    assert(renders == 16);
     state.preview_interacting = true;
     state.selected_pixel_x = 40;
     pump_until(pipeline, state, 0.41, [&] {
         return state.frame_cache.frame->trace && state.frame_cache.frame->trace->x == 40;
     });
-    assert(state.measurement.ready && state.measurement.median_ms == median && renders == 16);
+    assert(state.measurement.ready && state.measurement.median_ms == median && renders == 17);
     state.preview_interacting = false;
     state.render.camera.yaw += 0.1;
     pipeline.update(state, make_studio_render_input(state), 0.42);

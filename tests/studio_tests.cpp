@@ -192,6 +192,80 @@ static void test_analysis_hides_scene_annotations_and_guides_the_tool() {
     assert(!studio_scene_annotations_visible(ui.state));
 }
 
+static void test_reselecting_closeup_keeps_pixel_analysis() {
+    for (bool preset : {false, true}) {
+        StudioUiTest ui;
+        ImGui::GetIO().DisplaySize.y = 6000;
+        auto& state = ui.state;
+        if (!preset) {
+            exit_studio_preset(state);
+            // Selecting the current body from the overview must still enter it.
+            state.selected = 3;
+            select_studio_body(state, 3);
+            assert(state.camera_transition);
+            while (state.camera_transition) ui.draw();
+        }
+        assert(state.design_view && state.selected == 3);
+        state.render.camera.yaw = .21;
+        state.render.camera.pitch = -.17;
+        state.render.camera.zoom = .67;
+        state.compare_baseline = true;
+        state.compare_modes = state.inspect_pixel = state.select_pixel_tab = true;
+        state.compare_left = SamplingMode::SSAA4;
+        state.compare_right = SamplingMode::MSAA4;
+        state.selected_pixel_x = 96; state.selected_pixel_y = 48;
+        state.pixel_region_size = 17;
+        for (int i = 0; i < 100 && !state.measurement.ready; ++i) ui.draw();
+        ui.draw(); ui.draw(); // Restore the untimed trace after measurement.
+        assert(state.measurement.ready && state.frame_cache.frame->trace);
+        assert(state.frame_cache.frame->trace->events.size() > 1);
+        state.pixel_disclosure = {true, true, true, true, true, {true, true, true, true}};
+        ui.draw(); // Opening history first initializes its displayed trace identity.
+        state.trace_event_index = 1;
+        ui.draw();
+        assert(state.trace_event_index == 1);
+        const auto camera = state.render.camera;
+        const auto measurement = state.measurement;
+        const auto render_count = state.frame_cache.render_count;
+        const auto target = state.pixel_inspector_target;
+        const auto project = ui.project_text();
+
+        // Click the actual Earth row, not just the selection function. Assert
+        // its navigation ID too, so a miss cannot silently pass as a no-op.
+        ui.click(40, 121);
+        ImGuiWindow* sidebar = nullptr;
+        for (ImGuiWindow* window : GImGui->Windows)
+            if (std::strstr(window->Name, "/##sidebar_")) sidebar = window;
+        assert(sidebar && GImGui->NavId == sidebar->GetID("Earth##earth"));
+        ui.draw();
+        assert(!state.camera_transition && state.design_view && state.selected == 3);
+        assert(state.demos.active() == (preset ? DemoPreset::EarthTerrain : DemoPreset::None));
+        assert(state.inspect_pixel && state.compare_modes && state.compare_baseline && state.pixel_tab_active);
+        assert(state.selected_pixel_x == 96 && state.selected_pixel_y == 48 && state.pixel_region_size == 17);
+        assert(state.compare_left == SamplingMode::SSAA4 && state.compare_right == SamplingMode::MSAA4);
+        assert(state.pixel_inspector_target == target && state.trace_event_index == 1);
+        const auto& open = state.pixel_disclosure;
+        assert(open.details && open.history && open.background && open.shading && open.resolve);
+        assert(open.samples == std::vector<bool>({true, true, true, true}));
+        assert(state.render.camera.yaw == camera.yaw && state.render.camera.pitch == camera.pitch &&
+               state.render.camera.zoom == camera.zoom && state.render.camera.target.x == camera.target.x &&
+               state.render.camera.target.y == camera.target.y);
+        assert(state.measurement.ready && !state.measurement.running && !state.measurement.waiting);
+        assert(state.measurement.input_key == measurement.input_key &&
+               state.measurement.samples == measurement.samples && state.measurement.median_ms == measurement.median_ms);
+        assert(state.frame_cache.render_count == render_count && ui.project_text() == project);
+
+        // Explicit reset and selection of another planet keep their old meaning.
+        reset_studio_view(state);
+        assert(state.camera_transition);
+        while (state.camera_transition) ui.draw();
+        select_studio_body(state, 6);
+        assert(state.selected == 6 && state.camera_transition);
+        assert(!state.inspect_pixel && !state.compare_modes);
+        assert(state.selected_pixel_x == -1 && state.selected_pixel_y == -1);
+    }
+}
+
 static void test_orbit_tab_does_not_paint_the_closeup() {
     StudioUiTest ui;
     ui.click_tab(1);
@@ -457,7 +531,9 @@ static void test_pixel_keyboard_then_mouse_details() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
-    io.DisplaySize = {1280, 800};
+    // Keep the expanded history on screen so the real mouse checks below do
+    // not depend on scrolling or on scrollbar-induced changes to the zoom.
+    io.DisplaySize = {1280, 6000};
     io.DeltaTime = 1.0f / 60.0f;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     unsigned char* pixels;
@@ -470,11 +546,17 @@ static void test_pixel_keyboard_then_mouse_details() {
     state.compare_modes = state.inspect_pixel = state.select_pixel_tab = true;
     state.selected_pixel_x = 32;
     state.selected_pixel_y = 48;
-    auto draw = [&] {
+    std::string visible_text;
+    auto draw = [&](bool capture_text = false) {
         const auto input = make_studio_render_input(state);
         const auto frame = render_studio_frame(state, input);
         ImGui::NewFrame();
+        if (capture_text) ImGui::LogToBuffer(0); // Capture only explicitly opened nodes.
         draw_studio(state, 1, input, frame, false);
+        if (capture_text) {
+            visible_text = GImGui->LogBuffer.c_str();
+            ImGui::LogFinish();
+        }
         ImGui::Render();
     };
     auto click = [&](float x, float y) {
@@ -498,10 +580,115 @@ static void test_pixel_keyboard_then_mouse_details() {
     const ImGuiID details = ImHashStr("Details", 0, tabs->Tabs[2].ID);
     assert(inspector->StateStorage.GetInt(details, 0) == 0);
     // Details is the last control while collapsed; derive its position from layout.
-    click(inspector->WorkRect.Min.x + 50,
-          inspector->DC.CursorMaxPos.y - ImGui::GetFrameHeight() / 2);
+    const float control_x = inspector->WorkRect.Min.x + 50;
+    const float details_y = inspector->DC.CursorMaxPos.y - ImGui::GetFrameHeight() / 2;
+    click(control_x, details_y);
     assert(inspector->StateStorage.GetInt(details, 0) == 1);
     assert(state.selected_pixel_x == x + 1 && state.selected_pixel_y == y);
+    const ImGuiID history = ImHashStr("Processing history", 0, tabs->Tabs[2].ID);
+    const ImGuiID background = ImHashStr("Initial background", 0, history);
+    const ImGuiID shading = ImHashStr("Shading and depth values", 0, history);
+    const ImGuiID resolve = ImHashStr("Final resolve", 0, history);
+    auto activate_tree = [&](ImGuiID id) {
+        // Use the same keyboard activation path as a focused disclosure row.
+        ImGui::FocusWindow(inspector);
+        ImGui::SetNavID(id, ImGuiNavLayer_Main, 0, ImRect(0, 0, 100, 20));
+        ImGui::SetNavCursorVisible(true);
+        io.AddKeyEvent(ImGuiKey_Space, true); draw();
+        io.AddKeyEvent(ImGuiKey_Space, false); draw();
+    };
+    auto sample_id = [&](int sample) {
+        return ImHashStr("Sample", 0, ImHashData(&sample, sizeof(sample), shading));
+    };
+    auto descendants_are_closed = [&] {
+        draw(true);
+        assert(visible_text.find("Initial depth: infinity") == std::string::npos);
+        assert(visible_text.find("Positions are inside this pixel") == std::string::npos);
+        assert(visible_text.find("Depth test:") == std::string::npos);
+        assert(visible_text.find("All final samples averaged") == std::string::npos);
+    };
+    auto open_descendants = [&] {
+        activate_tree(background);
+        activate_tree(shading);
+        for (int s = 0; s < int(state.pixel_disclosure.samples.size()); ++s) {
+            activate_tree(sample_id(s));
+            assert(inspector->StateStorage.GetInt(sample_id(s), 0) == 1);
+        }
+        activate_tree(resolve);
+        draw(true);
+        assert(visible_text.find("Initial depth: infinity") != std::string::npos);
+        assert(visible_text.find("Positions are inside this pixel") != std::string::npos);
+        assert(visible_text.find("Depth test:") != std::string::npos);
+        assert(visible_text.find("All final samples averaged") != std::string::npos);
+    };
+    const float history_y = details_y + ImGui::GetFrameHeight() / 2 +
+        ImGui::GetStyle().ItemSpacing.y + 5 * ImGui::GetTextLineHeightWithSpacing() +
+        ImGui::GetTextLineHeight() / 2;
+    auto open_both = [&] {
+        click(control_x, details_y);
+        assert(inspector->StateStorage.GetInt(details, 0) == 1);
+        assert(inspector->StateStorage.GetInt(history, 0) == 0);
+        click(control_x, history_y);
+        assert(inspector->StateStorage.GetInt(history, 0) == 1);
+        descendants_are_closed();
+    };
+    click(control_x, history_y);
+    assert(inspector->StateStorage.GetInt(history, 0) == 1);
+    open_descendants();
+    draw(); draw(); // Refreshing the same selection must not interrupt reading.
+    assert(inspector->StateStorage.GetInt(details, 0) == 1);
+    assert(inspector->StateStorage.GetInt(history, 0) == 1);
+
+    activate_tree(shading);
+    activate_tree(shading);
+    draw(true);
+    assert(visible_text.find("Depth test:") == std::string::npos);
+    assert(visible_text.find("Positions are inside this pixel") != std::string::npos);
+    // Closing this branch must not close its siblings.
+    assert(visible_text.find("Initial depth: infinity") != std::string::npos);
+    assert(visible_text.find("All final samples averaged") != std::string::npos);
+    activate_tree(sample_id(0));
+    click(control_x, history_y);
+    click(control_x, history_y);
+    descendants_are_closed();
+    open_descendants();
+    click(control_x, details_y);
+    assert(inspector->StateStorage.GetInt(details, 0) == 0);
+    open_both(); // Reopening Details must leave history closed until its click.
+
+    open_descendants();
+    click(445, 347); // A different pixel closes both disclosures.
+    assert(state.selected_pixel_x != x + 1);
+    assert(inspector->StateStorage.GetInt(details, 0) == 0);
+    open_both();
+
+    open_descendants();
+    const int pixel_x = state.selected_pixel_x, pixel_y = state.selected_pixel_y;
+    state.selected = 4; // A different planet, even at the same pixel coordinates.
+    draw(); draw();
+    assert(state.selected_pixel_x == pixel_x && state.selected_pixel_y == pixel_y);
+    assert(inspector->StateStorage.GetInt(details, 0) == 0);
+    open_both();
+
+    open_descendants();
+    state.compare_right = SamplingMode::SSAA4;
+    draw(); draw();
+    assert(inspector->StateStorage.GetInt(details, 0) == 0);
+    open_both();
+    for (auto mode : {SamplingMode::SSAA4, SamplingMode::SSAA16}) {
+        state.compare_left = mode;
+        draw(); draw();
+        open_both();
+        open_descendants();
+        const auto samples = state.pixel_disclosure.samples.size();
+        assert(samples == (mode == SamplingMode::SSAA4 ? 4 : 16));
+        activate_tree(shading);
+        activate_tree(shading);
+        draw(true);
+        assert(visible_text.find("Depth test:") == std::string::npos);
+        for (int s = 0; s < int(samples); ++s)
+            assert(inspector->StateStorage.GetInt(sample_id(s), 0) == 0);
+    }
     ImGui::DestroyContext();
 }
 
@@ -911,9 +1098,11 @@ static void test_auto_measurement_reuses_frames_and_invalidates() {
         assert(state.measurement.waiting);
         tick(StudioRenderMeasurement::settle_seconds + 0.01);
         assert(state.measurement.running && state.measurement.completed_runs == 1);
+        assert(!state.frame_cache.frame->trace || !state.frame_cache.frame->trace->process_recorded);
         for (int i = 1; i < 14; ++i) {
             tick();
             assert(state.measurement.ready == (i == 13));
+            assert(!state.frame_cache.frame->trace || !state.frame_cache.frame->trace->process_recorded);
             assert(state.measurement.samples[0].size() ==
                    static_cast<std::size_t>(std::max(0, i - 2)));
         }
@@ -938,12 +1127,15 @@ static void test_auto_measurement_reuses_frames_and_invalidates() {
     assert(state.frame_cache.frame->image.rgb == reference.image.rgb);
     assert(state.frame_cache.frame->body_index == reference.body_index);
     const auto medians = state.measurement.median_ms;
+    tick(); // Restore process history once, outside the completed timing series.
+    assert(state.frame_cache.frame->trace->process_recorded);
+    assert(state.frame_cache.render_count == first_count + 15);
     const auto ready_count = state.frame_cache.render_count;
     for (int i = 0; i < 5; ++i) tick();
     state.pixel_region_size = 25;
     tick();
     assert(state.frame_cache.render_count == ready_count);
-    state.selected_pixel_x = 50; // Trace changes, but its extraction is outside the timer.
+    state.selected_pixel_x = 50; // New diagnostic history keeps the completed median.
     const auto& moved = tick();
     assert(moved.trace && moved.trace->x == 50 && moved.trace->y == 24);
     assert(moved.image.rgb == reference.image.rgb);
@@ -1023,6 +1215,7 @@ int main() {
     test_collision_replay_pauses_selects_survivor_and_keeps_design();
     test_inspector_switches_from_pixel_to_simulation_and_back();
     test_analysis_hides_scene_annotations_and_guides_the_tool();
+    test_reselecting_closeup_keeps_pixel_analysis();
     test_workflow_guidance_follows_the_active_tool();
     test_markers_use_visible_surface_pixels_not_orbit_trails();
     test_history_shortcuts_respect_text_input();

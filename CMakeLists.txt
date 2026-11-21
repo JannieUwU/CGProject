@@ -59,6 +59,7 @@ add_library(planet_core
     src/session.cpp
     src/renderer.cpp
     src/raster_renderer.cpp
+    src/triangle_coverage.cpp
     src/aa_benchmark.cpp
     src/png_writer.cpp)
 target_include_directories(planet_core PUBLIC include)
@@ -84,6 +85,30 @@ else()
     target_compile_options(planet_core_tests PRIVATE -UNDEBUG)
 endif()
 add_test(NAME planet_core_tests COMMAND planet_core_tests)
+add_executable(planet_pixel_trace_tests tests/pixel_trace_tests.cpp)
+target_link_libraries(planet_pixel_trace_tests PRIVATE planet_core)
+if(MSVC)
+    target_compile_options(planet_pixel_trace_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(planet_pixel_trace_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME planet_pixel_trace_tests COMMAND planet_pixel_trace_tests)
+add_executable(planet_shared_edge_tests tests/shared_edge_tests.cpp)
+target_link_libraries(planet_shared_edge_tests PRIVATE planet_core)
+if(MSVC)
+    target_compile_options(planet_shared_edge_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(planet_shared_edge_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME planet_shared_edge_tests COMMAND planet_shared_edge_tests)
+add_executable(planet_msaa_shading_tests tests/msaa_shading_tests.cpp)
+target_link_libraries(planet_msaa_shading_tests PRIVATE planet_core)
+if(MSVC)
+    target_compile_options(planet_msaa_shading_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(planet_msaa_shading_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME planet_msaa_shading_tests COMMAND planet_msaa_shading_tests)
 add_executable(planet_visual_tests tests/planet_visual_tests.cpp)
 target_link_libraries(planet_visual_tests PRIVATE planet_core)
 if(MSVC)
@@ -124,7 +149,7 @@ if(PLANET_BUILD_DESKTOP)
     target_link_libraries(imgui PUBLIC glfw)
 
     add_library(planet_studio_support STATIC
-        src/studio_ui.cpp src/studio_workflow.cpp src/studio_measurement.cpp src/studio_render_worker.cpp
+        src/studio_ui.cpp src/studio_pixel_trace.cpp src/studio_workflow.cpp src/studio_measurement.cpp src/studio_render_worker.cpp
         src/project_history.cpp src/project_recovery.cpp src/studio_document.cpp)
     target_link_libraries(planet_studio_support PUBLIC planet_core imgui Threads::Threads)
 

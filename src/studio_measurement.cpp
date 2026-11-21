@@ -42,7 +42,8 @@ std::string measurement_key(const StudioState& state, const StudioRenderInput& i
         }
     };
     trails(snapshot.trails); trails(snapshot.reference_trails);
-    // Pixel selection/Region are excluded: trace extraction is outside the render timer.
+    // Selection/Region/recording are diagnostic state. Timed frames disable
+    // in-render process recording, so these never invalidate a valid median.
     return key;
 }
 
@@ -120,16 +121,21 @@ const RenderFrame& update_studio_frame(StudioState& state, const StudioRenderInp
     cache.asynchronous = false;
     const auto key = measurement_key(state, input);
     prepare_measurement(state, key, now_seconds);
+    RenderConfig config = input.config;
+    if (result.running) config.trace_process = false;
+    const bool needs_process = config.trace_x >= 0 && config.trace_process;
+    const bool has_process = cache.frame && cache.frame->trace && cache.frame->trace->process_recorded;
 
     const bool needs_render = !cache.frame || cache.input_key != key || result.running ||
-        cache.trace_x != input.config.trace_x || cache.trace_y != input.config.trace_y;
+        cache.trace_x != input.config.trace_x || cache.trace_y != input.config.trace_y ||
+        needs_process != has_process;
     if (needs_render) {
         // The timed image is the displayed image: no extra benchmark render.
         // Alternating sides avoids always giving one method the same execution order.
         cache.frame = state.compare_modes
-            ? render_comparison_scene(input.project, input.snapshot, input.config,
+            ? render_comparison_scene(input.project, input.snapshot, config,
                 state.compare_left, state.compare_right, result.completed_runs % 2 != 0)
-            : render_scene(input.project, input.snapshot, input.config);
+            : render_scene(input.project, input.snapshot, config);
         cache.displayed_input = input;
         cache.input_key = key;
         cache.trace_x = input.config.trace_x;
@@ -228,6 +234,7 @@ const RenderFrame& StudioRenderPipeline::update(StudioState& state,
     request.right = state.compare_right;
     request.right_first = state.measurement.completed_runs % 2 != 0;
     request.measuring = state.measurement.running;
+    if (request.measuring) request.input.config.trace_process = false;
     if (preview) {
         request.input.config.width = std::max(1, input.config.width / 2);
         request.input.config.height = std::max(1, input.config.height / 2);
@@ -236,6 +243,8 @@ const RenderFrame& StudioRenderPipeline::update(StudioState& state,
     request.key = measurement_key(state, request.input) + context;
     request.key.append(reinterpret_cast<const char*>(&input.config.trace_x), sizeof(int));
     request.key.append(reinterpret_cast<const char*>(&input.config.trace_y), sizeof(int));
+    const bool process = request.input.config.trace_x >= 0 && request.input.config.trace_process;
+    request.key.append(reinterpret_cast<const char*>(&process), sizeof(process));
     if (request.key != pipeline.failed_key) pipeline.failed_key.clear();
     if (request.key != pipeline.failed_key &&
         (request.key != pipeline.last_key || (state.measurement.running && !pipeline.in_flight))) {

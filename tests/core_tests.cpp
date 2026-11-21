@@ -10,6 +10,7 @@
 #include "planet_sandbox/simulation.h"
 #include "planet_sandbox/solar_system.h"
 #include "planet_sandbox/texture.h"
+#include "pixel_trace_checks.h"
 
 #include <nlohmann/json.hpp>
 
@@ -1332,6 +1333,7 @@ static void test_msaa_trace_explains_partial_edge() {
     config.trace_x = edge_x;
     config.trace_y = edge_y;
     const RenderFrame inspected = render_scene(project, snapshot, config);
+    check_pixel_process(*inspected.trace);
     assert(inspected.image.rgb == msaa.image.rgb);
     assert(inspected.trace.has_value());
     const auto& trace = *inspected.trace;
@@ -1519,6 +1521,7 @@ static void test_near_clipped_ring_keeps_visible_arc() {
         config.trace_y = ring_y;
         const RenderFrame traced = render_scene(project, scene, config);
         assert(traced.image.rgb == frame.image.rgb);
+        check_pixel_process(*traced.trace);
         int ring_samples = 0;
         for (const TraceSample& sample : traced.trace->samples) {
             if (sample.surface != TraceSurface::Ring) continue;

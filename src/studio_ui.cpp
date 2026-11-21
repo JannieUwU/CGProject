@@ -275,11 +275,19 @@ void draw_pixel_inspector(StudioState& state, const RenderFrame& frame) {
     ImGui::PopTextWrapPos();
     ImGui::SetItemTooltip("Automatically measures a stationary view: 3 warm-up renders, then 11 timed renders. "
                          "The median stays fixed until the scene, view or sampling method changes. "
-                         "Excludes pixel-trace extraction, image upload, comparison stitching and UI. "
+                         "Detailed process recording is disabled during measurement. "
+                         "Excludes final trace extraction, image upload, comparison stitching and UI. "
                          "Moving the pixel selection or changing Region keeps the timing result.");
     ImGui::TextDisabled("%d x %d per view", panel_width, frame.image.height);
     ImGui::Spacing();
-    if (!ImGui::CollapsingHeader("Details") || !frame.trace) return;
+    auto& disclosure = state.pixel_disclosure;
+    ImGui::SetNextItemOpen(disclosure.details, ImGuiCond_Always);
+    disclosure.details = ImGui::CollapsingHeader("Details");
+    if (!disclosure.details) {
+        disclosure.close_details();
+        return;
+    }
+    if (!frame.trace) return;
     const PixelTrace& trace = *frame.trace;
     ImGui::Text("Pixel (%d, %d)", trace.x % panel_width, trace.y);
     for (int panel = 0; panel < panels; ++panel) {
@@ -291,6 +299,7 @@ void draw_pixel_inspector(StudioState& state, const RenderFrame& frame) {
     ImGui::TextDisabled("Filter: Nearest neighbor");
     if (panels == 2) ImGui::TextDisabled("Samples: %s view (clicked side)",
                                         trace.x < panel_width ? "left" : "right");
+    draw_pixel_process(state, trace);
     ImGui::SeparatorText("Samples");
     const ImVec2 diagram = ImGui::GetCursorScreenPos();
     ImGui::Dummy(ImVec2(112.0f, 112.0f));
@@ -301,8 +310,9 @@ void draw_pixel_inspector(StudioState& state, const RenderFrame& frame) {
         const ImVec4 color = display_color(sample.linear_rgb);
         const ImVec2 center(diagram.x + static_cast<float>(sample.position.x) * 112.0f,
                             diagram.y + static_cast<float>(sample.position.y) * 112.0f);
-        draw->AddCircleFilled(center, 14.0f, ImGui::ColorConvertFloat4ToU32(color));
-        draw->AddCircle(center, 14.0f, IM_COL32(240, 245, 250, 255), 0, 2.0f);
+        const float radius = trace.samples.size() > 4 ? 9.0f : 14.0f;
+        draw->AddCircleFilled(center, radius, ImGui::ColorConvertFloat4ToU32(color));
+        draw->AddCircle(center, radius, IM_COL32(240, 245, 250, 255), 0, 2.0f);
         draw->AddText({center.x - 4.0f, center.y - 7.0f}, IM_COL32(0, 0, 0, 255),
                       std::to_string(index + 1).c_str());
     }
@@ -808,6 +818,17 @@ void draw_simulation_inspector(StudioState& state) {
 }
 
 void draw_inspector(StudioState& state, const RenderFrame& frame, float width) {
+    // Check the requested selection even while the Pixel tab is hidden. Using
+    // the displayed trace here could reopen/reset against an older async frame.
+    const std::array<int, 8> target = {state.selected, state.selected_pixel_x,
+        state.selected_pixel_y, state.inspect_pixel, state.compare_modes,
+        static_cast<int>(state.render.sampling), static_cast<int>(state.compare_left),
+        static_cast<int>(state.compare_right)};
+    if (target != state.pixel_inspector_target) {
+        state.pixel_inspector_target = target;
+        state.pixel_disclosure.close_details();
+        state.trace_event_index = 0;
+    }
     ImGui::BeginChild("##inspector", ImVec2(width, 0), ImGuiChildFlags_Borders);
     ImGui::BeginDisabled(state.camera_transition.has_value());
     const bool simulating = state.session.mode() == SessionMode::Simulate ||
@@ -1275,6 +1296,9 @@ void begin_studio_design_focus(StudioState& state, int body_index) {
 void select_studio_body(StudioState& state, int body_index) {
     if (state.session.mode() == SessionMode::Design && state.session.project().solar_system &&
         state.demos.active() != DemoPreset::Collision) {
+        // Reselecting the open closeup must not restart its camera flight or
+        // discard the current pixel analysis. Explicit Reset view still works.
+        if (state.design_view && state.selected == body_index && !state.camera_transition) return;
         begin_studio_design_focus(state, body_index);
     } else {
         if (state.demos.active() != DemoPreset::None) exit_studio_preset(state);
