@@ -915,7 +915,7 @@ static void test_design_camera_flight() {
     const RenderCamera world_close = state.camera_transition->to;
     assert(std::abs(world_close.target.x - state.session.project().bodies[3].position.x) < 1e-12);
     assert(world_close.zoom < initial_zoom);
-    const Vec2 earth_position = state.session.project().bodies[3].position;
+    const auto earth_position = state.session.project().bodies[3].position;
     const auto screen_offset = [&](const RenderCamera& camera) {
         return std::hypot(earth_position.x - camera.target.x,
                           earth_position.y - camera.target.y) / camera.zoom;
@@ -1446,7 +1446,7 @@ static void test_demo_return_keeps_departing_planet_in_view() {
     StudioState state(make_solar_system_project(), "demo-back.json");
     assert(state.selected == 1);
     activate_studio_preset(state, DemoPreset::EarthTerrain);
-    const Vec2 earth = state.session.project().bodies[3].position;
+    const auto earth = state.session.project().bodies[3].position;
     return_studio_overview(state);
     assert(state.demos.active() == DemoPreset::None);
     assert(state.selected == 1 && state.camera_transition);
@@ -1761,7 +1761,113 @@ static void test_auto_measurement_reuses_frames_and_invalidates() {
     expect_pending();
 }
 
+static void test_observed_year_spatial_follow_and_analysis() {
+    StudioState state(make_observed_year_project(), "observed-year-test.json");
+    state.render.width = 128;
+    state.render.height = 96;
+    state.session.begin_simulation();
+    select_studio_body(state, 1);
+    while (state.camera_transition) advance_studio(state, .1);
+    state.session.set_playing(false);
+    assert(state.simulation_follow_id == "mercury");
+    assert(studio_timeline_limit(state) == 365);
+    seek_studio_time(state, 273);
+    const auto input = make_studio_render_input(state);
+    const auto mercury = input.snapshot.bodies[1].position;
+    assert(input.config.camera.target.z == mercury.z && mercury.z != 0);
+    const auto frame = render_studio_frame(state, input);
+    assert(frame.body_index[(96/2)*128+128/2] == 1);
+    const auto old_pixels = frame.image.rgb;
+    // Translation along z must translate both camera and full scene identically.
+    auto translated = input;
+    translated.config.camera.target.z += 2;
+    for (auto& body : translated.snapshot.bodies) body.position.z += 2;
+    for (auto& trail : translated.snapshot.trails) for (auto& p : trail.points) p.z += 2;
+    for (auto& trail : translated.snapshot.reference_trails) for (auto& p : trail.points) p.z += 2;
+    assert(render_studio_frame(state, translated).image.rgb == old_pixels);
+    state.compare_modes = true;
+    auto compared = make_studio_render_input(state);
+    assert(compared.config.camera.target.z == mercury.z);
+    const auto comparison = render_studio_frame(state, compared);
+    assert(comparison.panel_count == 2 && comparison.image.width == 128);
+    const auto frozen = state.session.snapshot().time;
+    advance_studio(state, .1);
+    assert(state.session.snapshot().time == frozen);
+    state.compare_modes = false;
+    return_studio_overview(state);
+    while (state.camera_transition) advance_studio(state, .1);
+    assert(state.simulation_follow_id.empty());
+    return_studio_design(state);
+    while (state.camera_transition) advance_studio(state, .1);
+    assert(state.session.mode() == SessionMode::Design);
+}
+
+static void test_running_loaded_dated_project_preserves_diy_physics() {
+    auto project = make_observed_year_project();
+    project.bodies[3].mass *= 2;
+    project.bodies[3].position.x += .01;
+    project.bodies[3].velocity.z += .0001;
+    project.bodies[3].design.relief = 1.7;
+    std::ostringstream saved;
+    write_project(saved, project);
+    std::istringstream input(saved.str());
+    StudioState state(read_project(input), "dated-diy.json");
+    const auto original = project_document(state.session.project());
+    for (int run = 0; run < 2; ++run) {
+        start_studio_simulation_mode(state, StudioSimulationMode::Real2026);
+        while (state.camera_transition) advance_studio(state, .1);
+        state.session.set_playing(false);
+        assert(state.session.mode() == SessionMode::Simulate);
+        assert(project_document(state.session.project()) == original);
+        const auto earth = state.session.snapshot().bodies[3];
+        assert(earth.mass == project.bodies[3].mass);
+        assert(earth.position.x == project.bodies[3].position.x);
+        assert(earth.velocity.z == project.bodies[3].velocity.z);
+        seek_studio_time(state, 20);
+        return_studio_design(state);
+        while (state.camera_transition) advance_studio(state, .1);
+        assert(project_document(state.session.project()) == original);
+    }
+}
+
+static void test_simulation_modes_keep_theoretical_initial_conditions() {
+    auto project = make_solar_system_project();
+    project.bodies[3].position = {4.3, .2, .1};
+    project.bodies[3].mass *= 1.5;
+    project.bodies[3].design.relief = 1.7;
+    StudioState state(project, "mode-selection.json");
+    const auto original = project_document(project);
+    start_studio_simulation_mode(state, StudioSimulationMode::Real2026);
+    while (state.camera_transition) advance_studio(state, .1);
+    assert(state.session.mode() == SessionMode::Simulate);
+    assert(state.session.project().epoch_jd > 0 && state.session.project().duration_days == 365);
+    assert(state.session.project().bodies[3].design.relief == 1.7);
+    seek_studio_time(state, 20);
+    start_studio_simulation_mode(state, StudioSimulationMode::Theoretical);
+    while (state.camera_transition) advance_studio(state, .1);
+    assert(state.session.project().epoch_jd == 0);
+    assert(project_document(state.session.project()) == original);
+    assert(state.session.snapshot().time == 0);
+    assert(state.session.project().gravitational_constant == 1);
+    advance_studio(state, .1);
+    const double time = state.session.snapshot().time;
+    start_studio_simulation_mode(state, StudioSimulationMode::Theoretical);
+    assert(!state.camera_transition && state.session.snapshot().time == time);
+    return_studio_design(state);
+    while (state.camera_transition) advance_studio(state, .1);
+    assert(project_document(state.session.project()) == original);
+    // A dated file opened directly has no cached DIY project: use original teaching defaults.
+    StudioState dated(make_observed_year_project(), "dated-mode.json");
+    start_studio_simulation_mode(dated, StudioSimulationMode::Theoretical);
+    while (dated.camera_transition) advance_studio(dated, .1);
+    assert(dated.session.project().epoch_jd == 0);
+    assert(dated.session.project().bodies[3].position.x == make_solar_system_project().bodies[3].position.x);
+}
+
 int main() {
+    test_running_loaded_dated_project_preserves_diy_physics();
+    test_simulation_modes_keep_theoretical_initial_conditions();
+    test_observed_year_spatial_follow_and_analysis();
     test_reference_comparison_clears_when_leaving_design_focus();
     test_design_reference_light_and_brush_feedback();
     test_old_frame_markers_do_not_relabel_a_changed_catalog();

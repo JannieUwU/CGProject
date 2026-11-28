@@ -96,8 +96,8 @@ int main(int argc, char** argv) {
             state["events"] = nlohmann::json::array();
             for (const auto& body : snapshot.bodies) {
                 state["bodies"].push_back({{"id", body.id}, {"mass", body.mass}, {"radius", body.radius},
-                                           {"position", {body.position.x, body.position.y}},
-                                           {"velocity", {body.velocity.x, body.velocity.y}}});
+                                           {"position", {body.position.x, body.position.y, body.position.z}},
+                                           {"velocity", {body.velocity.x, body.velocity.y, body.velocity.z}}});
             }
             for (const auto& event : snapshot.events) {
                 state["events"].push_back({{"time", event.time}, {"survivor", event.survivor},

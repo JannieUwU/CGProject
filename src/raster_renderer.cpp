@@ -506,6 +506,7 @@ public:
     Rasterizer(const Project& project, const RenderConfig& config)
         : config_(config), sample_count_(sampling_count(config.sampling)),
           samples_(static_cast<std::size_t>(config.width) * config.height * sample_count_) {
+        astronomical_ = project.epoch_jd > 0;
         const double yaw = config.camera.yaw, pitch = config.camera.pitch;
         view_direction_ = {std::sin(yaw) * std::cos(pitch), std::sin(pitch),
                            std::cos(yaw) * std::cos(pitch)};
@@ -513,7 +514,7 @@ public:
         up_ = {-std::sin(yaw) * std::sin(pitch), std::cos(pitch),
                -std::cos(yaw) * std::sin(pitch)};
         distance_ = project.view_extent * 1.35 / half_fov_tangent * config.camera.zoom;
-        camera_position_ = Vec3{config.camera.target.x, config.camera.target.y, 0.0} +
+        camera_position_ = Vec3{config.camera.target.x, config.camera.target.y, config.camera.target.z} +
                            view_direction_ * distance_;
         image_scale_ = config.height / (2.0 * half_fov_tangent);
         for (int y = 0; y < config.height; ++y) {
@@ -537,12 +538,12 @@ public:
     }
 
     double camera_depth(Vec3 world) const {
-        const Vec3 relative = world - Vec3{config_.camera.target.x, config_.camera.target.y, 0.0};
+        const Vec3 relative = world - Vec3{config_.camera.target.x, config_.camera.target.y, config_.camera.target.z};
         return distance_ - dot(relative, view_direction_);
     }
 
     bool project(Vec3 world, ScreenVertex& screen) const {
-        const Vec3 relative = world - Vec3{config_.camera.target.x, config_.camera.target.y, 0.0};
+        const Vec3 relative = world - Vec3{config_.camera.target.x, config_.camera.target.y, config_.camera.target.z};
         const double depth = camera_depth(world);
         if (depth < near_plane - 1e-9 || !std::isfinite(depth)) return false;
         const double projected_depth = std::max(depth, near_plane);
@@ -846,9 +847,9 @@ public:
     void trail(const BodyTrail& trail, Color color, int body_index,
                TraceSurface surface = TraceSurface::Trail) {
         for (std::size_t segment = 1; segment < trail.points.size(); ++segment) {
-            const double plane = surface == TraceSurface::ReferenceTrail ? -0.07 : -0.05;
-            Vec3 world_a{trail.points[segment - 1].x, trail.points[segment - 1].y, plane};
-            Vec3 world_b{trail.points[segment].x, trail.points[segment].y, plane};
+            const double plane = astronomical_ ? 0.0 : (surface == TraceSurface::ReferenceTrail ? -0.07 : -0.05);
+            Vec3 world_a{trail.points[segment - 1].x, trail.points[segment - 1].y, trail.points[segment - 1].z + plane};
+            Vec3 world_b{trail.points[segment].x, trail.points[segment].y, trail.points[segment].z + plane};
             const double depth_a = camera_depth(world_a);
             const double depth_b = camera_depth(world_b);
             if (!std::isfinite(depth_a) || !std::isfinite(depth_b) ||
@@ -1133,6 +1134,7 @@ private:
     bool process_truncated_ = false;
     Vec3 view_direction_{}, right_{}, up_{};
     Vec3 camera_position_{};
+    bool astronomical_ = false;
     double distance_ = 0.0;
     double image_scale_ = 0.0;
 };
@@ -1144,7 +1146,7 @@ void draw_sphere(Rasterizer& rasterizer, const BodyState& body, const Material& 
     const auto rotation=body_surface_rotation(material.kind,material.appearance.seed,
         material.design?material.design->axis_tilt_offset:0.0,time);
     const double radius = body.radius * scale_factor;
-    const Vec3 center{body.position.x, body.position.y, 0.0};
+    const Vec3 center{body.position.x, body.position.y, body.position.z};
     std::vector<Vertex> grid((latitude_steps + 1) * (longitude_steps + 1));
     for (int row = 0; row <= latitude_steps; ++row) {
         const double theta = pi * row / latitude_steps;
@@ -1203,7 +1205,7 @@ void draw_ring(Rasterizer& rasterizer, const BodyState& body, const Material& ma
     const double inner = radius * (material.kind == BodyKind::Uranus ? 1.32 : 1.18);
     const double outer = inner + radius * (material.kind == BodyKind::Uranus ? 0.12 :
                                            material.ring_map ? 1.25 : ring_width);
-    const Vec3 center{body.position.x, body.position.y, 0.0};
+    const Vec3 center{body.position.x, body.position.y, body.position.z};
     const auto vertex = [&](double angle, double distance, double radial) {
         if (material.kind == BodyKind::Uranus) {
             const double tilt = (98.0 + material.design->axis_tilt_offset) * pi / 180.0;
@@ -1239,7 +1241,7 @@ RenderFrame render_scene(const Project& project, const SceneSnapshot& snapshot,
     if (config.width <= 0 || config.height <= 0 || config.width > 8192 || config.height > 8192 ||
         !std::isfinite(config.camera.yaw) || !std::isfinite(config.camera.pitch) ||
         !std::isfinite(config.camera.zoom) || config.camera.zoom <= 0.0 ||
-        !std::isfinite(config.camera.target.x) || !std::isfinite(config.camera.target.y) ||
+        !std::isfinite(config.camera.target.z) || !std::isfinite(config.camera.target.x) || !std::isfinite(config.camera.target.y) ||
         !std::isfinite(config.light_azimuth) || !std::isfinite(config.light_elevation) ||
         (config.sampling != SamplingMode::Single && config.sampling != SamplingMode::SSAA4 &&
          config.sampling != SamplingMode::MSAA4 && config.sampling != SamplingMode::SSAA16) ||
@@ -1257,11 +1259,11 @@ RenderFrame render_scene(const Project& project, const SceneSnapshot& snapshot,
     const auto sun = std::find_if(snapshot.bodies.begin(), snapshot.bodies.end(),
                                   [](const BodyState& b) { return b.id == "sun"; });
     const auto configure = [&](Material& m, const BodyState& body, double scale_factor, bool detail) {
-        m.center = {body.position.x, body.position.y, 0};
+        m.center = {body.position.x, body.position.y, body.position.z};
         m.radius = body.radius * scale_factor;
         m.time = snapshot.time;
         m.light = project.solar_system && sun != snapshot.bodies.end() && body.id != "sun"
-            ? normalize(Vec3{sun->position.x, sun->position.y, 0} - m.center)
+            ? normalize(Vec3{sun->position.x, sun->position.y, sun->position.z} - m.center)
             : normalize(Vec3{-.48, .62, .62});
         if(config.preview_light && sun==snapshot.bodies.end()) m.light={
             std::sin(config.light_azimuth)*std::cos(config.light_elevation),
@@ -1332,7 +1334,8 @@ RenderFrame render_scene(const Project& project, const SceneSnapshot& snapshot,
         draw_sphere(rasterizer, body, material, index, scale_factor, snapshot.time);
         const double view_position = body.position.x * std::sin(config.camera.yaw) *
                                          std::cos(config.camera.pitch) +
-                                     body.position.y * std::sin(config.camera.pitch);
+                                     body.position.y * std::sin(config.camera.pitch) +
+                                     body.position.z * std::cos(config.camera.yaw) * std::cos(config.camera.pitch);
         rings.push_back({&body, &*found, index, scale_factor, view_position});
         if (project.solar_system) atmospheres.push_back({&body, &*found, index, scale_factor, view_position});
         if (project.solar_system && found->design.cloud_opacity > 0.0 &&

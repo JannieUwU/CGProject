@@ -37,7 +37,7 @@ cmake --build build --config Release --parallel 6
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-桌面配置注册 9 项测试，包括核心渲染、像素记录、共享边、MSAA 选点、行星外观、批量导出和桌面状态/渲染/文档测试。构建目录与源码位置绑定；更换机器或源码目录后重新配置即可。
+桌面配置注册 11 项测试，包括核心渲染、像素记录、共享边、MSAA 选点、行星外观、批量导出和桌面状态/渲染/文档测试。构建目录与源码位置绑定；更换机器或源码目录后重新配置即可。
 
 构建完成后启动桌面端：
 
@@ -57,7 +57,7 @@ cmake --build build-headless --config Release --parallel 6
 ctest --test-dir build-headless -C Release --output-on-failure
 ```
 
-此配置注册 6 项非桌面测试。下文导出命令也可将可执行程序所在的 `build` 改为 `build-headless`。已有依赖源码时可通过 CMake 的本地 FetchContent 源码配置复用；REBOUND 另支持 `REBOUND_SOURCE_DIR`，均须指向真实存在且版本兼容的源码目录。本说明不依赖开发者个人机器的路径或预览应用包。
+此配置注册 8 项非桌面测试。下文导出命令也可将可执行程序所在的 `build` 改为 `build-headless`。已有依赖源码时可通过 CMake 的本地 FetchContent 源码配置复用；REBOUND 另支持 `REBOUND_SOURCE_DIR`，均须指向真实存在且版本兼容的源码目录。本说明不依赖开发者个人机器的路径或预览应用包。
 
 ## 命令行导出与离线采样对比
 
@@ -89,6 +89,8 @@ ctest --test-dir build-headless -C Release --output-on-failure
 ## 桌面查看与交互
 
 ### 行星设计与模拟
+
+新增固定窗口的三维轨道预设：**2025-11-28 至 2026-11-28（TDB）**。在 Design 模式点击 `Run simulation` 后，选择 `2026 Real Trajectory` 或 `Theoretical Simulation`。前者使用这一年范围的真实初始状态，后者沿用原来的教学轨道和 DIY 物理参数；Simulation 顶部也可通过 `Simulation mode` 切换，切换会重新开始计时。它使用 NASA/JPL Horizons 的真实初始位置和速度，由 REBOUND 近似模拟一年，支持轨道倾角、三维近景跟随、日期显示、时间跳转及年末自动暂停；运行时无需联网。切换保留外观设计，并在当前会话中保留切换前的理论模拟初始条件；从年度文件直接启动且没有理论模式缓存时，理论模式使用原教学默认值。也可 Load `examples/observed-year.json`。数据来源、单位、抽查误差和模型限制见 [年度轨道说明](docs/OBSERVED_YEAR.md)。
 
 默认项目为太阳和八大行星。Design 模式下，点击画面中的行星、全景名称或目录项可进入近景；从一颗行星切到另一颗时经过全景过渡。`Back to system` 返回全景。已经处于同一星球近景时，再点其名称会保留当前状态。近景右键拖动旋转视角，滚轮缩放；镜头过渡期间暂停画面选点和雕刻。
 

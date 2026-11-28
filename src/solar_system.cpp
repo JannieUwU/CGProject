@@ -3,9 +3,13 @@
 #include <array>
 #include <cmath>
 #include <stdexcept>
+#include <ctime>
+#include <algorithm>
 
 namespace planet_sandbox {
 namespace {
+
+#include "observed_year_data.inc"
 
 struct CatalogEntry {
     BodyKind kind;
@@ -53,6 +57,40 @@ Project make_solar_system_project() {
         project.bodies.push_back(body);
     }
     return project;
+}
+
+Project make_observed_year_project() {
+    Project project = make_solar_system_project();
+    project.epoch_jd = observed_epoch_jd;
+    project.duration_days = 365.0;
+    constexpr double au_km = 149597870.7;
+    project.gravitational_constant = 132712440041.279419 * 86400.0 * 86400.0 / (au_km * au_km * au_km);
+    project.view_extent = 34.0;
+    const double display_radii[] = {.12, .055, .065, .07, .06, .18, .16, .11, .105};
+    for (std::size_t i = 0; i < project.bodies.size(); ++i) {
+        auto& body = project.bodies[i];
+        const auto& values = observed_states[i];
+        body.mass = values[0]; body.radius = values[1];
+        body.position = {values[2], values[3], values[4]};
+        body.velocity = {values[5], values[6], values[7]};
+        body.display_radius = display_radii[i];
+    }
+    return project;
+}
+
+double simulation_time_limit(const Project& project) {
+    return project.duration_days > 0 ? project.duration_days : 100000.0;
+}
+
+std::string simulation_calendar_date(const Project& project, double time) {
+    if (project.epoch_jd <= 0) return {};
+    // UTC calendar formatting of a numerical TDB day count; no time-scale conversion.
+    const auto seconds = static_cast<std::time_t>(std::floor(project.epoch_jd + time - 2440587.5) * 86400.0);
+    const auto* calendar = std::gmtime(&seconds);
+    if (!calendar) return "Date unavailable";
+    char text[32]{};
+    std::strftime(text, sizeof(text), "%Y-%m-%d", calendar);
+    return text;
 }
 
 BodyKind solar_body_kind(std::size_t index) {

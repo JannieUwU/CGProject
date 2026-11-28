@@ -18,6 +18,7 @@
 namespace planet_sandbox {
 
 enum class StudioCameraDestination { Design, Overview, Simulation, DesignOverview, Camera };
+enum class StudioSimulationMode { Theoretical, Real2026 };
 
 enum class StudioWorkflowStage { Overview, Design, Simulation, Collision, Transition };
 enum class StudioOverview { FullSystem, InnerSystem };
@@ -37,9 +38,9 @@ struct StudioCameraTransition {
     RenderCamera from;
     RenderCamera to;
     RenderCamera detail_camera;
-    std::optional<Vec2> screen_anchor;
+    std::optional<WorldVector> screen_anchor;
     std::optional<RenderCamera> via;
-    std::optional<Vec2> departure_anchor;
+    std::optional<WorldVector> departure_anchor;
     double elapsed = 0.0;
     double duration = 0.9;
     StudioCameraDestination destination = StudioCameraDestination::Camera;
@@ -121,6 +122,8 @@ struct StudioState {
     std::string notice;
     int selected = 0;
     bool design_view = false;
+    // Retain this session's DIY initial conditions while viewing dated trajectories.
+    std::optional<Project> theoretical_project;
     // Presentation preferences never change saved scale or physical collision radii.
     bool protect_display_sizes = true;
     StudioOverview overview = StudioOverview::FullSystem;
@@ -218,6 +221,7 @@ void return_studio_overview(StudioState& state);
 void select_studio_overview(StudioState& state, StudioOverview overview);
 void set_studio_size_protection(StudioState& state, bool enabled);
 void begin_studio_simulation(StudioState& state);
+void start_studio_simulation_mode(StudioState& state, StudioSimulationMode mode);
 void return_studio_design(StudioState& state);
 void focus_studio_selected(StudioState& state);
 void reset_studio_view(StudioState& state);

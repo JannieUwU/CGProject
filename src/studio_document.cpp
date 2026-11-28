@@ -163,6 +163,7 @@ bool load_studio_document(StudioState& state, const std::filesystem::path& path,
         if (state.demos.active() != DemoPreset::None) exit_studio_preset(state);
         state.session.replace_project(std::move(project));
         state.history.reset_saved(state.session.project());
+        state.theoretical_project.reset();
         state.compare_design=false;state.design_reference.reset();state.design_reference_id.clear();
         state.document_revision = state.session.project_revision();
         state.document_path = target;

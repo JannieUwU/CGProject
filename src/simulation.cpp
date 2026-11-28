@@ -20,6 +20,9 @@ namespace planet_sandbox {
 
 struct Simulation::Impl {
     reb_simulation* simulation = nullptr;
+    double time_limit = 100000.0;
+    double trail_interval = 0.0;
+    double last_record = -1.0;
     std::vector<CollisionEvent> events;
     std::vector<BodyTrail> trails;
     std::vector<std::string> identity_names;
@@ -47,18 +50,18 @@ struct Simulation::Impl {
         const std::string absorbed = second_wins ? a_id : b_id;
         const auto& target=second_wins?b:a;
         const auto& incoming=second_wins?a:b;
-        const double dx=incoming.x-target.x, dy=incoming.y-target.y;
-        const double distance=std::hypot(dx,dy);
-        const double vx=incoming.vx-target.vx, vy=incoming.vy-target.vy;
-        const double speed=std::hypot(vx,vy);
-        const Vec2 normal=distance>1e-12 ? Vec2{dx/distance,dy/distance}
-            : speed>1e-12 ? Vec2{-vx/speed,-vy/speed} : Vec2{1,0};
+        const double dx=incoming.x-target.x, dy=incoming.y-target.y, dz=incoming.z-target.z;
+        const double distance=std::sqrt(dx*dx+dy*dy+dz*dz);
+        const double vx=incoming.vx-target.vx, vy=incoming.vy-target.vy, vz=incoming.vz-target.vz;
+        const double speed=std::sqrt(vx*vx+vy*vy+vz*vz);
+        const WorldVector normal=distance>1e-12 ? WorldVector{dx/distance,dy/distance,dz/distance}
+            : speed>1e-12 ? WorldVector{-vx/speed,-vy/speed,-vz/speed} : WorldVector{1,0,0};
         const double total_mass=a.m+b.m;
         CollisionContact contact;
         contact.normal=normal;
-        contact.survivor_position={target.x,target.y};
-        contact.position={target.x+normal.x*target.r,target.y+normal.y*target.r};
-        contact.velocity={(a.m*a.vx+b.m*b.vx)/total_mass,(a.m*a.vy+b.m*b.vy)/total_mass};
+        contact.survivor_position={target.x,target.y,target.z};
+        contact.position={target.x+normal.x*target.r,target.y+normal.y*target.r,target.z+normal.z*target.r};
+        contact.velocity={(a.m*a.vx+b.m*b.vx)/total_mass,(a.m*a.vy+b.m*b.vy)/total_mass,(a.m*a.vz+b.m*b.vz)/total_mass};
         contact.relative_speed=speed;
         contact.survivor_radius=target.r; contact.absorbed_radius=incoming.r;
         self->events.push_back({simulation->t, survivor, absorbed, contact});
@@ -71,6 +74,8 @@ struct Simulation::Impl {
     }
 
     void record_positions() {
+        if (last_record >= 0 && simulation->t - last_record < trail_interval - 1e-10) return;
+        last_record = simulation->t;
         for (std::size_t i = 0; i < simulation->N; ++i) {
             const auto& particle = simulation->particles[i];
             const std::string id = particle.name ? particle.name : "";
@@ -79,7 +84,7 @@ struct Simulation::Impl {
                 trails.push_back({id, {}});
                 found = trails.end() - 1;
             }
-            found->points.push_back({particle.x, particle.y});
+            found->points.push_back({particle.x, particle.y, particle.z});
             if (found->points.size() > 1024) found->points.erase(found->points.begin());
         }
     }
@@ -91,7 +96,9 @@ Simulation::Simulation(const Project& project) : impl_(new Impl) {
     if (!impl_->simulation) throw std::runtime_error("Could not initialize REBOUND");
     auto* simulation = impl_->simulation;
     simulation->extras = impl_.get();
-    simulation->G = 1.0;
+    impl_->time_limit = simulation_time_limit(project);
+    impl_->trail_interval = project.epoch_jd > 0 ? 0.5 : 0.0;
+    simulation->G = project.gravitational_constant;
     simulation->dt = 0.001;
     reb_simulation_set_integrator(simulation, "ias15");
     simulation->collision = reb_simulation::REB_COLLISION_LINE;
@@ -102,8 +109,10 @@ Simulation::Simulation(const Project& project) : impl_(new Impl) {
         reb_particle particle{};
         particle.x = body.position.x;
         particle.y = body.position.y;
+        particle.z = body.position.z;
         particle.vx = body.velocity.x;
         particle.vy = body.velocity.y;
+        particle.vz = body.velocity.z;
         particle.m = body.mass;
         particle.r = body.radius;
         const std::size_t index = static_cast<std::size_t>(&body - project.bodies.data());
@@ -117,9 +126,10 @@ Simulation::Simulation(const Project& project) : impl_(new Impl) {
             for (std::size_t j = i + 1; j < simulation->N; ++j) {
                 const auto& a = simulation->particles[i];
                 const auto& b = simulation->particles[j];
+                const double dz = a.z - b.z;
                 const double dx = a.x - b.x;
                 const double dy = a.y - b.y;
-                if (dx * dx + dy * dy <= (a.r + b.r) * (a.r + b.r)) {
+                if (dx * dx + dy * dy + dz * dz <= (a.r + b.r) * (a.r + b.r)) {
                     reb_collision collision{};
                     collision.p1 = i;
                     collision.p2 = j;
@@ -147,6 +157,7 @@ std::unique_ptr<Simulation> Simulation::clone() const {
     // Function pointers are intentionally omitted by REBOUND's state serialization.
     if(int(warnings)&~int(REB_BINARYDATA_WARNING_POINTERS))
         throw std::runtime_error("Could not copy complete simulation state");
+    copy->time_limit=impl_->time_limit;copy->trail_interval=impl_->trail_interval;copy->last_record=impl_->last_record;
     copy->events=impl_->events;copy->trails=impl_->trails;copy->identity_names=impl_->identity_names;
     copy->simulation->extras=copy.get();
     copy->simulation->collision_resolve=&Impl::merge_collision;
@@ -160,7 +171,7 @@ std::unique_ptr<Simulation> Simulation::clone() const {
 }
 
 void Simulation::advance_to(double time) {
-    if (!std::isfinite(time) || time < impl_->simulation->t || time > 100000.0) {
+    if (!std::isfinite(time) || time < impl_->simulation->t || time > impl_->time_limit) {
         throw std::invalid_argument("Target time must be finite, nonnegative, and not earlier than current time");
     }
     if (time == impl_->simulation->t) return;
@@ -181,8 +192,8 @@ SceneSnapshot Simulation::snapshot() const {
     snapshot.trails = impl_->trails;
     for (std::size_t i = 0; i < impl_->simulation->N; ++i) {
         const reb_particle& particle = impl_->simulation->particles[i];
-        snapshot.bodies.push_back({particle.name ? particle.name : "", {particle.x, particle.y},
-                                   {particle.vx, particle.vy}, particle.m, particle.r});
+        snapshot.bodies.push_back({particle.name ? particle.name : "", {particle.x, particle.y, particle.z},
+                                   {particle.vx, particle.vy, particle.vz}, particle.m, particle.r});
     }
     return snapshot;
 }

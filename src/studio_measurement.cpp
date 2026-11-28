@@ -17,7 +17,7 @@ std::string measurement_key(const StudioState& state, const StudioRenderInput& i
         key.append(reinterpret_cast<const char*>(&value), sizeof(value));
     };
     auto text = [&](const std::string& value) { add(value.size()); key.append(value); };
-    auto point = [&](Vec2 p) { add(p.x); add(p.y); };
+    auto point = [&](auto p) { add(p.x); add(p.y); add(p.z); };
     add(state.session.project_revision()); add(state.scene_generation); add(state.session.mode());
     add(state.demos.active()); add(state.selected); add(state.design_view);
     add(state.compare_baseline); add(state.compare_modes);
@@ -307,13 +307,14 @@ bool studio_frame_can_interact(const StudioState& state) {
         const auto& desired_body = desired_snapshot.bodies[i];
         if (shown_body.id != desired_body.id || shown_body.radius != desired_body.radius ||
             shown_body.position.x != desired_body.position.x ||
-            shown_body.position.y != desired_body.position.y) return false;
+            shown_body.position.y != desired_body.position.y ||
+            shown_body.position.z != desired_body.position.z) return false;
     }
     const auto& shown = cache.displayed_input->config.camera;
     const auto& desired = current.config.camera;
     return shown.yaw == desired.yaw && shown.pitch == desired.pitch &&
            shown.zoom == desired.zoom && shown.target.x == desired.target.x &&
-           shown.target.y == desired.target.y;
+           shown.target.y == desired.target.y && shown.target.z == desired.target.z;
 }
 
 } // namespace planet_sandbox

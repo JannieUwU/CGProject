@@ -13,6 +13,14 @@ struct Vec2 {
     double y = 0.0;
 };
 
+// World-space state; Vec2 remains reserved for UV and screen coordinates.
+struct WorldVector {
+    double x = 0.0, y = 0.0, z = 0.0;
+    WorldVector() = default;
+    WorldVector(double x_, double y_, double z_ = 0.0) : x(x_), y(y_), z(z_) {}
+    WorldVector(Vec2 p) : x(p.x), y(p.y) {}
+};
+
 struct Appearance {
     std::uint32_t seed = 1;
     std::string primary = "#6dbec0";
@@ -63,8 +71,8 @@ struct BodySpec {
     std::string name;
     double mass = 1.0;
     double radius = 0.1;
-    Vec2 position;
-    Vec2 velocity;
+    WorldVector position;
+    WorldVector velocity;
     Appearance appearance;
     BodyKind kind = BodyKind::Custom;
     double display_radius = 0.0;
@@ -76,6 +84,10 @@ struct Project {
     double view_extent = 5.0;
     double display_scale = 2.0;
     bool solar_system = false;
+    // Zero epoch means the legacy, dimensionless DIY model.
+    double epoch_jd = 0.0;
+    double duration_days = 0.0;
+    double gravitational_constant = 1.0;
 };
 
 Project read_project(std::istream& input);

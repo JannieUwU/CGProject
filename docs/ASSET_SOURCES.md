@@ -39,4 +39,6 @@ Mercury's crater-depth control depresses locally darker image centers relative t
 
 ## Interpretation
 
+The optional dated orbital preset uses NASA/JPL Horizons geometric vectors for the Sun and planetary-system barycenters, with DE440 GM ratios. Original responses, exact queries and quarterly reference states are retained in `assets/ephemeris-year`; see [the observed-year documentation](OBSERVED_YEAR.md) for units, time scale and approximation limits. The default teaching preset remains schematic.
+
 The default orbital radii and body sizes are schematic. Relative planetary masses and circular speeds provide a reproducible REBOUND scene, not a dated ephemeris. Gas and ice giants use their visible cloud maps and artistic cloud-top displacement; the prototype does not infer a solid rocky surface from those images. Storm and sunspot controls are image-anchored artistic overlays rather than scientific flow models. Uranus currently has a deliberately faint procedural ring whose axis follows its visual tilt; this is not a measured ring opacity profile. Advanced atmosphere, measured height-map provenance and ring particle models remain later work.

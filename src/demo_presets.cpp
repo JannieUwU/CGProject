@@ -13,7 +13,12 @@ void DemoPresets::activate(DemoPreset preset, const Project& source) {
     if (!source.solar_system) throw std::invalid_argument("Demos require the fixed solar system");
     validate_project(source);
     if (preset == DemoPreset::Collision) {
-        Project copy = source;
+        Project copy = source.epoch_jd > 0 ? make_solar_system_project() : source;
+        if (source.epoch_jd > 0) {
+            // Collision demo uses its own teaching units, not dated ephemeris units.
+            for (std::size_t i = 0; i < copy.bodies.size(); ++i)
+                copy.bodies[i].design = source.bodies[i].design;
+        }
         BodySpec& earth = copy.bodies[3];
         BodySpec& mars = copy.bodies[4];
         earth.position = {4.0, 0.0};

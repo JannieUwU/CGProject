@@ -1,6 +1,7 @@
 #include "planet_sandbox/studio_ui.h"
 #include "planet_sandbox/impact_visual.h"
 #include "planet_sandbox/planet_visual.h"
+#include "planet_sandbox/solar_system.h"
 
 #include <algorithm>
 #include <cmath>
@@ -41,7 +42,7 @@ std::vector<std::pair<Vec2,Vec2>> studio_brush_outline(const StudioRenderInput& 
     const V right{std::cos(camera.yaw),0,-std::sin(camera.yaw)};
     const V up{-std::sin(camera.yaw)*std::sin(camera.pitch),std::cos(camera.pitch),-std::cos(camera.yaw)*std::sin(camera.pitch)};
     const double distance=input.project.view_extent*1.35/tangent*camera.zoom,image_scale=height/(2*tangent);
-    const V eye{camera.target.x+direction.x*distance,camera.target.y+direction.y*distance,direction.z*distance};
+    const V eye{camera.target.x+direction.x*distance,camera.target.y+direction.y*distance,camera.target.z+direction.z*distance};
     const auto rotation=body_surface_rotation(spec.kind,spec.appearance.seed,spec.design.axis_tilt_offset,input.snapshot.time);
     const double body_radius=found->radius*input.project.display_scale*(input.project.solar_system?spec.display_radius/spec.radius:1);
     std::array<std::optional<Vec2>,97> points;
@@ -53,7 +54,7 @@ std::vector<std::pair<Vec2,Vec2>> studio_brush_outline(const StudioRenderInput& 
         const double u=std::atan2(local.z,local.x)/(2*pi),v=std::acos(std::clamp(local.y,-1.0,1.0))/pi;
         const double relief=solar_shape_multiplier(spec.kind,u,v,spec.design,layer);
         const V normal=rotation.to_world(local);
-        const V world{found->position.x+normal.x*body_radius*relief,found->position.y+normal.y*body_radius*relief,normal.z*body_radius*relief};
+        const V world{found->position.x+normal.x*body_radius*relief,found->position.y+normal.y*body_radius*relief,found->position.z+normal.z*body_radius*relief};
         const V toward{eye.x-world.x,eye.y-world.y,eye.z-world.z};
         const double depth=dot(toward,direction);
         if(depth<=.05 || dot(normal,toward)<=0) continue;
@@ -181,7 +182,7 @@ bool replay_studio_collision(StudioState& state, const CollisionEvent& event) {
         const auto& c=*bookmark.contact;
         auto& to=state.camera_transition->to;
         const double age=snapshot.time-bookmark.time;
-        to.target={c.position.x+c.velocity.x*age,c.position.y+c.velocity.y*age};
+        to.target={c.position.x+c.velocity.x*age,c.position.y+c.velocity.y*age,c.position.z+c.velocity.z*age};
         const auto input=make_studio_render_input(state);
         const double merged=std::cbrt(c.survivor_radius*c.survivor_radius*c.survivor_radius+
                                     c.absorbed_radius*c.absorbed_radius*c.absorbed_radius);
@@ -193,7 +194,7 @@ bool replay_studio_collision(StudioState& state, const CollisionEvent& event) {
         state.camera_transition->resume_playback=false;
     }
     state.collision_replay=StudioState::CollisionReplay{bookmark,
-        std::min(100000.0,bookmark.time+impact_visual_lifetime),true};
+        std::min(simulation_time_limit(state.session.project()),bookmark.time+impact_visual_lifetime),true};
     state.notice="Collision replay / 0.25x. Visual ejecta do not change the merge physics.";
     return true;
 }
@@ -217,7 +218,7 @@ bool advance_studio_collision_replay(StudioState& state, double seconds) {
     if(replay.event.contact) {
         const auto& c=*replay.event.contact;
         const double age=state.session.snapshot().time-replay.event.time;
-        state.render.camera.target={c.position.x+c.velocity.x*age,c.position.y+c.velocity.y*age};
+        state.render.camera.target={c.position.x+c.velocity.x*age,c.position.y+c.velocity.y*age,c.position.z+c.velocity.z*age};
     }
     return true;
 }

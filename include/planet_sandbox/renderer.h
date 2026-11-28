@@ -87,7 +87,7 @@ struct RenderCamera {
     double yaw = 0.0;
     double pitch = 0.0;
     double zoom = 1.0;
-    Vec2 target;
+    WorldVector target;
 };
 
 struct RenderConfig {

@@ -1,0 +1,105 @@
+*******************************************************************************
+Revised: April 12, 2021         Earth Barycenter                              3
+ 
+ Dynamical point:
+ ---------------
+ The common point about which the Earth and Moon revolve (center of mass). This
+ is approximately 4671 km from the center of the Earth, or about 3/4 of the way 
+ to the surface. See 399 for Earth center, or 301 for Moon center ephemeris.
+*******************************************************************************
+
+
+*******************************************************************************
+Ephemeris / API_USER Fri Nov 27 13:29:42 2026 Pasadena, USA      / Horizons
+*******************************************************************************
+Target body name: Earth-Moon Barycenter (3)       {source: DE441}
+Center body name: Solar System Barycenter (0)     {source: DE441}
+Center-site name: BODY CENTER
+*******************************************************************************
+Start time      : A.D. 2025-Nov-28 00:00:00.0000 TDB
+Stop  time      : A.D. 2026-Nov-28 00:00:00.0000 TDB
+Step-size       : DISCRETE TIME-LIST
+*******************************************************************************
+Center geodetic : 0.0, 0.0, 0.0                   {E-lon(deg),Lat(deg),Alt(km)}
+Center cylindric: 0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}
+Center radii    : (undefined)
+Output units    : AU-D
+Calendar mode   : Mixed Julian/Gregorian
+Output type     : GEOMETRIC cartesian states
+Output format   : 2 (position and velocity)
+Reference frame : Ecliptic of J2000.0
+*******************************************************************************
+            JDTDB,            Calendar Date (TDB),                      X,                      Y,                      Z,                     VX,                     VY,                     VZ,
+**************************************************************************************************************************************************************************************************
+$$SOE
+2461007.500000000, A.D. 2025-Nov-28 00:00:00.0000,  4.036243993084120E-01,  8.932964229083099E-01,  8.051155370303999E-05, -1.594511445569438E-02,  7.030867951396538E-03, -4.723218840031270E-07,
+2461099.500000000, A.D. 2026-Feb-28 00:00:00.0000, -9.276043836310266E-01,  3.488382287970686E-01,  1.075582896521860E-04, -6.427258668920779E-03, -1.612954577892834E-02,  8.623392845846593E-07,
+2461188.500000000, A.D. 2026-May-28 00:00:00.0000, -4.087431428185421E-01, -9.334632147862670E-01,  1.692011898322536E-04,  1.548527426149389E-02, -6.968195100426451E-03,  1.937450018038757E-07,
+2461280.500000000, A.D. 2026-Aug-28 00:00:00.0000,  9.092926890694112E-01, -4.423905103273393E-01,  1.198700022584623E-04,  7.172266988625119E-03,  1.544791201687256E-02, -1.100712690001534E-06,
+2461372.500000000, A.D. 2026-Nov-28 00:00:00.0000,  4.101292812334688E-01,  8.920295961400931E-01,  2.891793697353583E-05, -1.591445685882645E-02,  7.104828402707216E-03, -4.905335344875871E-07,
+$$EOE
+**************************************************************************************************************************************************************************************************
+ 
+TIME
+
+  Barycentric Dynamical Time ("TDB" or T_eph) output was requested. This
+continuous coordinate time is equivalent to the relativistic proper time
+of a clock at rest in a reference frame co-moving with the solar system
+barycenter but outside the system's gravity well. It is the independent
+variable in the solar system relativistic equations of motion.
+
+  TDB runs at a uniform rate of one SI second per second and is independent
+of irregularities in Earth's rotation.
+ 
+CALENDAR SYSTEM
+
+  Mixed calendar mode was active such that calendar dates after AD 1582-Oct-15
+(if any) are in the modern Gregorian system. Dates prior to 1582-Oct-5 (if any)
+are in the Julian calendar system, which is automatically extended for dates
+prior to its adoption on 45-Jan-1 BC.  The Julian calendar is useful for
+matching historical dates. The Gregorian calendar more accurately corresponds
+to the Earth's orbital motion and seasons. A "Gregorian-only" calendar mode is
+available if such physical events are the primary interest.
+
+REFERENCE FRAME AND COORDINATES
+
+  Ecliptic at the standard reference epoch
+
+    Reference epoch: J2000.0
+    X-Y plane: adopted Earth orbital plane at the reference epoch
+               Note: IAU76 obliquity of 84381.448 arcseconds wrt ICRF X-Y plane
+    X-axis   : ICRF
+    Z-axis   : perpendicular to the X-Y plane in the directional (+ or -) sense
+               of Earth's north pole at the reference epoch.
+
+  Symbol meaning [1 au= 149597870.700 km, 1 day= 86400.0 s]:
+
+    JDTDB    Julian Day Number, Barycentric Dynamical Time
+      X      X-component of position vector (au)
+      Y      Y-component of position vector (au)
+      Z      Z-component of position vector (au)
+      VX     X-component of velocity vector (au/day)                           
+      VY     Y-component of velocity vector (au/day)                           
+      VZ     Z-component of velocity vector (au/day)                           
+
+ABERRATIONS AND CORRECTIONS
+
+ Geometric state vectors have NO corrections or aberrations applied.
+
+Computations by ...
+
+    Solar System Dynamics Group, Horizons On-Line Ephemeris System
+    4800 Oak Grove Drive, Jet Propulsion Laboratory
+    Pasadena, CA  91109   USA
+
+    General site: https://ssd.jpl.nasa.gov/
+    Mailing list: https://ssd.jpl.nasa.gov/email_list.html
+    System news : https://ssd.jpl.nasa.gov/horizons/news.html
+    User Guide  : https://ssd.jpl.nasa.gov/horizons/manual.html
+    Connect     : browser        https://ssd.jpl.nasa.gov/horizons/app.html#/x
+                  API            https://ssd-api.jpl.nasa.gov/doc/horizons.html
+                  command-line   telnet ssd.jpl.nasa.gov 6775
+                  e-mail/batch   https://ssd.jpl.nasa.gov/ftp/ssd/horizons_batch.txt
+                  scripts        https://ssd.jpl.nasa.gov/ftp/ssd/SCRIPTS
+    Inquiries   : Jon.D.Giorgini@jpl.nasa.gov
+*******************************************************************************

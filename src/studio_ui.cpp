@@ -79,7 +79,7 @@ RenderCamera overview_camera(const StudioState& state, bool initial_positions = 
             if (spec == state.session.project().bodies.end() ||
                 spec->kind < BodyKind::Mercury || spec->kind > BodyKind::Mars) continue;
             extent = std::max(extent, std::hypot(body.position.x - camera.target.x,
-                body.position.y - camera.target.y) + 1.5 * spec->display_radius * display_scale(state));
+                body.position.y - camera.target.y, body.position.z - camera.target.z) + 1.5 * spec->display_radius * display_scale(state));
         }
         const double aspect = std::min(1.0, double(state.render.width) / std::max(1, state.render.height));
         camera.zoom = extent * 1.12 / (1.35 * state.session.project().view_extent * std::max(.1, aspect));
@@ -114,22 +114,26 @@ double smooth_fraction(double fraction) {
 }
 
 RenderCamera interpolate_camera(const RenderCamera& from, const RenderCamera& to,
-                                const std::optional<Vec2>& anchor, double fraction) {
+                                const std::optional<WorldVector>& anchor, double fraction) {
     const double t = smooth_fraction(fraction);
     RenderCamera camera;
     camera.yaw = from.yaw + std::remainder(to.yaw - from.yaw, 2.0 * pi) * t;
     camera.pitch = from.pitch + (to.pitch - from.pitch) * t;
     camera.target = {from.target.x + (to.target.x - from.target.x) * t,
-                     from.target.y + (to.target.y - from.target.y) * t};
+                     from.target.y + (to.target.y - from.target.y) * t,
+                     from.target.z + (to.target.z - from.target.z) * t};
     camera.zoom = std::exp(std::log(from.zoom) +
                            (std::log(to.zoom) - std::log(from.zoom)) * t);
     if (anchor) {
         const double start_x = (anchor->x - from.target.x) / from.zoom;
         const double start_y = (anchor->y - from.target.y) / from.zoom;
+        const double start_z = (anchor->z - from.target.z) / from.zoom;
         const double end_x = (anchor->x - to.target.x) / to.zoom;
         const double end_y = (anchor->y - to.target.y) / to.zoom;
+        const double end_z = (anchor->z - to.target.z) / to.zoom;
         camera.target = {anchor->x - camera.zoom * (start_x + (end_x - start_x) * t),
-                         anchor->y - camera.zoom * (start_y + (end_y - start_y) * t)};
+                         anchor->y - camera.zoom * (start_y + (end_y - start_y) * t),
+                         anchor->z - camera.zoom * (start_z + (end_z - start_z) * t)};
     }
     if (fraction >= 1.0) return to;
     return camera;
@@ -150,7 +154,7 @@ RenderCamera camera_between(const StudioCameraTransition& flight, double fractio
 void start_camera_transition(StudioState& state, RenderCamera from, RenderCamera to,
                              StudioCameraDestination destination,
                              RenderCamera detail = {}, bool resume = false,
-                             std::optional<Vec2> anchor = std::nullopt) {
+                             std::optional<WorldVector> anchor = std::nullopt) {
     state.sculpt_stroke.end();
     state.selected_pixel_x = state.selected_pixel_y = -1;
     state.compare_modes = false;
@@ -676,10 +680,14 @@ void edit_motion(StudioState& state) {
     double x = current.position.x, y = current.position.y;
     if (ImGui::InputDouble("X##position", &x, 0.1, 1.0, "%.3f")) update([&](BodySpec& b) { b.position.x = x; });
     if (ImGui::InputDouble("Y##position", &y, 0.1, 1.0, "%.3f")) update([&](BodySpec& b) { b.position.y = y; });
+    double z = current.position.z;
+    if (ImGui::InputDouble("Z##position", &z, 0.01, 0.1, "%.6f")) update([&](BodySpec& b) { b.position.z = z; });
     ImGui::SeparatorText("Initial velocity");
     double vx = current.velocity.x, vy = current.velocity.y;
     if (ImGui::InputDouble("X##velocity", &vx, 0.1, 1.0, "%.3f")) update([&](BodySpec& b) { b.velocity.x = vx; });
     if (ImGui::InputDouble("Y##velocity", &vy, 0.1, 1.0, "%.3f")) update([&](BodySpec& b) { b.velocity.y = vy; });
+    double vz = current.velocity.z;
+    if (ImGui::InputDouble("Z##velocity", &vz, 0.0001, 0.001, "%.8f")) update([&](BodySpec& b) { b.velocity.z = vz; });
 }
 
 void draw_sidebar(StudioState& state, float width) {
@@ -816,12 +824,21 @@ void draw_initial_motion(const BodySpec& body) {
     ImGui::SeparatorText("Initial state");
     ImGui::Text("Mass: %.8g", body.mass);
     ImGui::Text("Collision radius: %.8g", body.radius);
-    ImGui::Text("Position: %.3f, %.3f", body.position.x, body.position.y);
-    ImGui::Text("Velocity: %.3f, %.3f", body.velocity.x, body.velocity.y);
+    if (body.position.z != 0)
+        ImGui::Text("Position: %.5f, %.5f, %.5f", body.position.x, body.position.y, body.position.z);
+    else ImGui::Text("Position: %.3f, %.3f", body.position.x, body.position.y);
+    if (body.velocity.z != 0)
+        ImGui::Text("Velocity: %.5f, %.5f, %.5f", body.velocity.x, body.velocity.y, body.velocity.z);
+    else ImGui::Text("Velocity: %.3f, %.3f", body.velocity.x, body.velocity.y);
     ImGui::TextDisabled("Values use simulation units.");
 }
 
 void draw_simulation_inspector(StudioState& state) {
+    if (state.session.project().epoch_jd > 0) {
+        const auto date = simulation_calendar_date(state.session.project(), state.session.snapshot().time);
+        ImGui::Text("Date: %s TDB", date.c_str());
+        ImGui::TextWrapped("2025-11-28 - 2026-11-28. Newtonian approximation from Horizons initial states. Editing initial conditions creates a DIY variant.");
+    }
     ImGui::Checkbox("Impact effects", &state.render.impact_effects);
     ImGui::SetItemTooltip("Artistic flash, ejecta and afterglow. These visuals do not simulate fragmentation.");
     if(state.collision_replay) {
@@ -837,13 +854,15 @@ void draw_simulation_inspector(StudioState& state) {
     const auto live = std::find_if(snapshot.bodies.begin(), snapshot.bodies.end(),
                                   [&](const auto& body) { return body.id == selected.id; });
     if (live != snapshot.bodies.end()) {
-        ImGui::Text("Position: %.3f, %.3f", live->position.x, live->position.y);
-        ImGui::Text("Speed: %.4f", std::hypot(live->velocity.x, live->velocity.y));
+        if (project.epoch_jd > 0 || live->position.z != 0)
+            ImGui::Text("Position: %.5f, %.5f, %.5f", live->position.x, live->position.y, live->position.z);
+        else ImGui::Text("Position: %.3f, %.3f", live->position.x, live->position.y);
+        ImGui::Text("Speed: %.4f", std::hypot(live->velocity.x, live->velocity.y, live->velocity.z));
         const auto sun = std::find_if(snapshot.bodies.begin(), snapshot.bodies.end(),
                                       [](const auto& body) { return body.id == "sun"; });
         if (sun != snapshot.bodies.end() && sun != live) {
             ImGui::Text("Distance to Sun: %.4f", std::hypot(live->position.x - sun->position.x,
-                                                           live->position.y - sun->position.y));
+                                                           live->position.y - sun->position.y, live->position.z - sun->position.z));
         }
     } else {
         const auto impact = std::find_if(snapshot.events.rbegin(), snapshot.events.rend(),
@@ -857,7 +876,7 @@ void draw_simulation_inspector(StudioState& state) {
         ImGui::TextWrapped("Select an active planet to follow it. Return to Design to edit the original.");
     }
     ImGui::PushStyleColor(ImGuiCol_Text, {0.60f, 0.65f, 0.70f, 1.0f});
-    ImGui::TextWrapped("Simulation units. Display sizes are enlarged.");
+    ImGui::TextWrapped(project.epoch_jd > 0 ? "Distance: AU. Speed: AU/day. Time: TDB days. Display sizes are enlarged." : "Simulation units. Display sizes are enlarged.");
     ImGui::PopStyleColor();
     if (collision_demo) {
         ImGui::TextWrapped("Temporary Earth and Mars demo. Your DIY project is preserved.");
@@ -1285,6 +1304,12 @@ void draw_scene(StudioState& state, ImTextureID texture, const StudioRenderInput
                         : body->radius * project.display_scale;
                     const double follow_scale = extent / project.view_extent;
                     minimum_zoom = 0.4 * follow_scale;
+                    if (project.epoch_jd > 0) {
+                        const double radius = body->radius * display_scale(state) *
+                            (project.solar_system ? selected.display_radius / selected.radius : 1.0);
+                        minimum_zoom = std::max(minimum_zoom, (radius + 0.055) * 0.41421356237309503 /
+                                                           (1.35 * project.view_extent));
+                    }
                     // Keep the overview range while allowing large close-ups to zoom out smoothly.
                     maximum_zoom = std::max(maximum_zoom, 3.0 * follow_scale);
                 }
@@ -1431,7 +1456,7 @@ void begin_studio_design_focus(StudioState& state, int body_index) {
         state.demos.active() == DemoPreset::Collision) return;
     if (body_index < 0 || body_index >= static_cast<int>(state.session.project().bodies.size())) return;
     const bool transferring = state.design_view && state.selected != body_index;
-    const Vec2 departing = state.session.project().bodies[state.selected].position;
+    const WorldVector departing = state.session.project().bodies[state.selected].position;
     const RenderCamera from = world_camera(state);
     if (state.demos.active() != DemoPreset::None) {
         exit_studio_preset(state);
@@ -1498,8 +1523,8 @@ void return_studio_overview(StudioState& state) {
         return;
     }
     RenderCamera from = world_camera(state);
-    std::optional<Vec2> anchor = state.session.project().solar_system
-        ? std::optional<Vec2>(state.session.project().bodies[state.selected].position)
+    std::optional<WorldVector> anchor = state.session.project().solar_system
+        ? std::optional<WorldVector>(state.session.project().bodies[state.selected].position)
         : std::nullopt;
     const DemoPreset preset = state.demos.active();
     if (preset != DemoPreset::None) {
@@ -1545,8 +1570,8 @@ void begin_studio_simulation(StudioState& state) {
     const DemoPreset preset = state.demos.active();
     const int focused = state.selected;
     RenderCamera from = world_camera(state);
-    std::optional<Vec2> anchor = state.session.project().solar_system
-        ? std::optional<Vec2>(state.session.project().bodies[state.selected].position)
+    std::optional<WorldVector> anchor = state.session.project().solar_system
+        ? std::optional<WorldVector>(state.session.project().bodies[state.selected].position)
         : std::nullopt;
     if (preset != DemoPreset::None) {
         exit_studio_preset(state);
@@ -1565,14 +1590,45 @@ void begin_studio_simulation(StudioState& state) {
                             StudioCameraDestination::Simulation, {}, true, anchor);
 }
 
+void start_studio_simulation_mode(StudioState& state, StudioSimulationMode mode) {
+    if (state.camera_transition) return;
+    const bool real = mode == StudioSimulationMode::Real2026;
+    if (real && !state.session.project().solar_system) return;
+    const bool was_real = state.session.project().epoch_jd > 0;
+    if (state.session.mode() == SessionMode::Simulate && real == was_real) return;
+    if (state.demos.active() != DemoPreset::None) exit_studio_preset(state);
+    cancel_studio_collision_replay(state);
+    if (state.session.mode() == SessionMode::Simulate) state.session.return_to_design();
+    state.compare_baseline = state.compare_design = state.compare_modes = state.inspect_pixel = false;
+    state.design_view = false;
+    // Starting the current mode must preserve loaded and edited initial conditions.
+    if (real != was_real) {
+        const auto current = state.session.project();
+        if (!was_real) state.theoretical_project = current;
+        auto next = real ? make_observed_year_project()
+                         : state.theoretical_project.value_or(make_solar_system_project());
+        // Appearance edits remain available in both modes; physics has separate inputs.
+        for (auto& body : next.bodies) {
+            const auto found = std::find_if(current.bodies.begin(), current.bodies.end(),
+                [&](const auto& source) { return source.id == body.id; });
+            if (found != current.bodies.end()) body.design = found->design;
+        }
+        if (!apply_studio_edit(state, std::move(next), "Change simulation mode") &&
+            (state.session.project().epoch_jd > 0) != real) return;
+        state.render.camera = overview_camera(state);
+    }
+    ++state.scene_generation;
+    begin_studio_simulation(state);
+}
+
 void return_studio_design(StudioState& state) {
     if (state.session.mode() != SessionMode::Simulate) return;
     cancel_studio_collision_replay(state);
     const RenderCamera from = world_camera(state);
     state.simulation_follow_id.clear();
     state.session.set_playing(false);
-    const std::optional<Vec2> anchor = state.session.project().solar_system
-        ? std::optional<Vec2>(state.session.project().bodies[state.selected].position)
+    const std::optional<WorldVector> anchor = state.session.project().solar_system
+        ? std::optional<WorldVector>(state.session.project().bodies[state.selected].position)
         : std::nullopt;
     state.design_view = false;
     state.timeline_horizon = 80.0;
@@ -1591,7 +1647,7 @@ void focus_studio_selected(StudioState& state) {
         state.notice = "Select a planet that is active in this snapshot.";
         return;
     }
-    const Vec2 position = found == snapshot.bodies.end() ? selected.position : found->position;
+    const WorldVector position = found == snapshot.bodies.end() ? selected.position : found->position;
     const double radius = found == snapshot.bodies.end() ? selected.radius : found->radius;
     const double visible_radius = project.solar_system ? selected.display_radius : radius;
     const RenderCamera from = world_camera(state);
@@ -1730,13 +1786,13 @@ void advance_studio(StudioState& state, double real_seconds) {
 }
 
 double studio_timeline_limit(const StudioState& state) {
-    return std::min(100000.0, std::max({80.0, state.timeline_horizon,
-                                        std::ceil(state.session.snapshot().time)}));
+    return std::min(simulation_time_limit(state.session.project()), std::max({80.0, state.timeline_horizon,
+                                        std::ceil(state.session.snapshot().time), state.session.project().duration_days}));
 }
 
 void seek_studio_time(StudioState& state, double time) {
     if (state.session.mode() != SessionMode::Simulate ||
-        !std::isfinite(time) || time > 100000.0) return;
+        !std::isfinite(time) || time > simulation_time_limit(state.session.project())) return;
     const double target = std::max(0.0, time);
     cancel_studio_collision_replay(state);
     state.session.seek(target);
@@ -1859,9 +1915,25 @@ void draw_studio(StudioState& state, ImTextureID texture, const StudioRenderInpu
         ImGui::TextDisabled("DESIGN");
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, {0.12f, 0.38f, 0.39f, 1.0f});
-        if (ImGui::Button("Run simulation")) begin_studio_simulation(state);
-        ImGui::SetItemTooltip("Fly back to the full system and simulate your current design.\nReturn to Design to keep editing.");
+        if (ImGui::Button("Run simulation")) ImGui::OpenPopup("Choose simulation mode");
+        ImGui::SetItemTooltip("Choose 2026 real trajectories or the original theoretical simulation.");
         ImGui::PopStyleColor();
+        if (ImGui::BeginPopup("Choose simulation mode")) {
+            ImGui::TextUnformatted("Simulation mode");
+            ImGui::Separator();
+            if (ImGui::Selectable("2026 Real Trajectory", false, ImGuiSelectableFlags_None,
+                                  ImVec2(240, 0)) && state.session.project().solar_system) {
+                start_studio_simulation_mode(state, StudioSimulationMode::Real2026);
+            }
+            ImGui::TextDisabled("Nov 28, 2025 - Nov 28, 2026 (TDB)");
+            ImGui::TextDisabled("Horizons initial states; approximate simulation.");
+            ImGui::Separator();
+            if (ImGui::Selectable("Theoretical Simulation")) {
+                start_studio_simulation_mode(state, StudioSimulationMode::Theoretical);
+            }
+            ImGui::TextDisabled("Original teaching orbits and DIY collision physics.");
+            ImGui::EndPopup();
+        }
     } else {
         if (ImGui::Button("Design")) return_studio_design(state);
         ImGui::SameLine();
@@ -1899,6 +1971,24 @@ void draw_studio(StudioState& state, ImTextureID texture, const StudioRenderInpu
     }
     ImGui::EndDisabled();
     ImGui::Separator();
+
+    if (state.session.mode() == SessionMode::Simulate && state.demos.active() == DemoPreset::None) {
+        ImGui::BeginDisabled(state.camera_transition.has_value());
+        const bool real = state.session.project().epoch_jd > 0;
+        ImGui::SetNextItemWidth(225);
+        if (ImGui::BeginCombo("Simulation mode", real ? "2026 Real Trajectory" : "Theoretical Simulation")) {
+            if (state.session.project().solar_system && ImGui::Selectable("2026 Real Trajectory", real))
+                start_studio_simulation_mode(state, StudioSimulationMode::Real2026);
+            if (ImGui::Selectable("Theoretical Simulation", !real))
+                start_studio_simulation_mode(state, StudioSimulationMode::Theoretical);
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Switching modes restarts the simulation. DIY initial conditions are kept for this session.");
+        ImGui::SameLine();
+        ImGui::TextDisabled(real ? "Nov 2025 - Nov 2026 | Approximate" : "Teaching orbits / DIY physics");
+        ImGui::EndDisabled();
+        ImGui::Separator();
+    }
 
     const float total = ImGui::GetContentRegionAvail().x;
     const float sidebar = std::clamp(total * 0.19f, 190.0f, 235.0f);

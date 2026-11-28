@@ -12,11 +12,11 @@
 namespace planet_sandbox {
 namespace {
 
-Vec2 parse_vec2(const nlohmann::json& value) {
-    if (!value.is_array() || value.size() != 2) {
-        throw std::invalid_argument("Position and velocity must be [x, y] arrays");
+WorldVector parse_vec2(const nlohmann::json& value) {
+    if (!value.is_array() || (value.size() != 2 && value.size() != 3)) {
+        throw std::invalid_argument("Position and velocity must be [x, y] or [x, y, z] arrays");
     }
-    return {value.at(0).get<double>(), value.at(1).get<double>()};
+    return {value.at(0).get<double>(), value.at(1).get<double>(), value.size() == 3 ? value.at(2).get<double>() : 0.0};
 }
 
 bool valid_color(const std::string& color) {
@@ -38,6 +38,9 @@ Project read_project(std::istream& input) {
         throw std::invalid_argument("Unknown project type: " + type);
     }
     project.solar_system = type == "solar-system";
+    project.epoch_jd = document.value("epoch_jd", 0.0);
+    project.duration_days = document.value("duration_days", 0.0);
+    project.gravitational_constant = document.value("gravitational_constant", 1.0);
     project.view_extent = document.value("view_extent", 5.0);
     project.display_scale = document.value("display_scale", 2.0);
     for (const auto& item : document.at("bodies")) {
@@ -112,14 +115,17 @@ void write_project(std::ostream& output, const Project& project) {
         {"type", project.solar_system ? "solar-system" : "sandbox"},
         {"view_extent", project.view_extent},
         {"display_scale", project.display_scale},
+        {"epoch_jd", project.epoch_jd},
+        {"duration_days", project.duration_days},
+        {"gravitational_constant", project.gravitational_constant},
         {"bodies", nlohmann::json::array()}
     };
     for (const auto& body : project.bodies) {
         const auto& a = body.appearance;
         nlohmann::json item = {
             {"id", body.id}, {"name", body.name}, {"mass", body.mass}, {"radius", body.radius},
-            {"position", {body.position.x, body.position.y}},
-            {"velocity", {body.velocity.x, body.velocity.y}}
+            {"position", {body.position.x, body.position.y, body.position.z}},
+            {"velocity", {body.velocity.x, body.velocity.y, body.velocity.z}}
         };
         if (!project.solar_system) {
             item["appearance"] = {
@@ -178,6 +184,13 @@ void validate_project(const Project& project) {
         !std::isfinite(project.display_scale) || project.display_scale <= 0) {
         throw std::invalid_argument("View extent and display scale must be positive finite numbers");
     }
+    if (!std::isfinite(project.epoch_jd) || !std::isfinite(project.duration_days) ||
+        !std::isfinite(project.gravitational_constant) || project.gravitational_constant <= 0 ||
+        project.epoch_jd < 0 || project.duration_days < 0 || project.duration_days > 100000 ||
+        ((project.epoch_jd > 0) != (project.duration_days > 0)))
+        throw std::invalid_argument("Invalid epoch, duration or gravitational constant");
+    if (project.duration_days > 365.0)
+        throw std::invalid_argument("Dated projects support at most 365 TDB days");
     std::set<std::string> ids;
     if (project.solar_system && project.bodies.size() != 9) {
         throw std::invalid_argument("Solar system must contain the Sun and eight planets");
@@ -189,6 +202,7 @@ void validate_project(const Project& project) {
         }
         if (!std::isfinite(body.mass) || body.mass <= 0 || !std::isfinite(body.radius) || body.radius <= 0 ||
             !std::isfinite(body.position.x) || !std::isfinite(body.position.y) ||
+            !std::isfinite(body.position.z) || !std::isfinite(body.velocity.z) ||
             !std::isfinite(body.velocity.x) || !std::isfinite(body.velocity.y)) {
             throw std::invalid_argument("Body mass and radius must be positive; state must be finite");
         }

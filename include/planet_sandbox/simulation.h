@@ -11,14 +11,14 @@ namespace planet_sandbox {
 
 struct BodyState {
     std::string id;
-    Vec2 position;
-    Vec2 velocity;
+    WorldVector position;
+    WorldVector velocity;
     double mass = 0.0;
     double radius = 0.0;
 };
 
 struct CollisionContact {
-    Vec2 position, normal, velocity, survivor_position;
+    WorldVector position, normal, velocity, survivor_position;
     double relative_speed = 0.0;
     double survivor_radius = 0.0;
     double absorbed_radius = 0.0;
@@ -33,7 +33,7 @@ struct CollisionEvent {
 
 struct BodyTrail {
     std::string id;
-    std::vector<Vec2> points;
+    std::vector<WorldVector> points;
 };
 
 struct SceneSnapshot {
