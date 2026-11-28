@@ -1802,6 +1802,34 @@ static void test_observed_year_spatial_follow_and_analysis() {
     assert(state.session.mode() == SessionMode::Design);
 }
 
+static void test_running_loaded_dated_project_preserves_diy_physics() {
+    auto project = make_observed_year_project();
+    project.bodies[3].mass *= 2;
+    project.bodies[3].position.x += .01;
+    project.bodies[3].velocity.z += .0001;
+    project.bodies[3].design.relief = 1.7;
+    std::ostringstream saved;
+    write_project(saved, project);
+    std::istringstream input(saved.str());
+    StudioState state(read_project(input), "dated-diy.json");
+    const auto original = project_document(state.session.project());
+    for (int run = 0; run < 2; ++run) {
+        start_studio_simulation_mode(state, StudioSimulationMode::Real2026);
+        while (state.camera_transition) advance_studio(state, .1);
+        state.session.set_playing(false);
+        assert(state.session.mode() == SessionMode::Simulate);
+        assert(project_document(state.session.project()) == original);
+        const auto earth = state.session.snapshot().bodies[3];
+        assert(earth.mass == project.bodies[3].mass);
+        assert(earth.position.x == project.bodies[3].position.x);
+        assert(earth.velocity.z == project.bodies[3].velocity.z);
+        seek_studio_time(state, 20);
+        return_studio_design(state);
+        while (state.camera_transition) advance_studio(state, .1);
+        assert(project_document(state.session.project()) == original);
+    }
+}
+
 static void test_simulation_modes_keep_theoretical_initial_conditions() {
     auto project = make_solar_system_project();
     project.bodies[3].position = {4.3, .2, .1};
@@ -1837,6 +1865,7 @@ static void test_simulation_modes_keep_theoretical_initial_conditions() {
 }
 
 int main() {
+    test_running_loaded_dated_project_preserves_diy_physics();
     test_simulation_modes_keep_theoretical_initial_conditions();
     test_observed_year_spatial_follow_and_analysis();
     test_reference_comparison_clears_when_leaving_design_focus();

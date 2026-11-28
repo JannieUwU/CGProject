@@ -6,7 +6,7 @@
 
 在 Design 模式点击 `Run simulation`，选择 `2026 Real Trajectory` 或 `Theoretical Simulation`。进入 Simulation 后，顶部 `Simulation mode` 下拉框也可切换。
 
-`2026 Real Trajectory` 使用标准 Horizons 初始条件及这一年范围，不沿用理论模拟中修改过的质量、位置和速度；它仍是近似数值模拟，界面会标明日期范围与近似性质。`Theoretical Simulation` 使用原教学轨道和 DIY 物理参数。
+从理论模式切换到 `2026 Real Trajectory` 时使用标准 Horizons 初始条件及这一年范围，不沿用理论模拟中修改过的质量、位置和速度。已加载或正在编辑的年度项目选择该模式运行时，保留当前质量、位置、速度和外观设计；返回 Design 后再次运行也保留这些修改。它仍是近似数值模拟，界面会标明日期范围与近似性质。`Theoretical Simulation` 使用原教学轨道和 DIY 物理参数。
 
 切换重置模拟时间、跟随与分析状态，保留外观设计，并在本次会话中缓存切换前的理论模拟项目，切回时恢复其物理初始条件。从年度 JSON 直接启动、没有本次会话理论缓存时，理论模式使用原来的教学默认参数。该缓存不会写入项目文件，加载其他项目时清除；Save 保存当前模式的项目。
 
@@ -20,7 +20,7 @@
 .\build\Release\planet_studio.exe examples/observed-year.json
 ```
 
-旧项目的 `[x,y]` 位置、速度继续可读，缺失的 z 默认为 0；新保存的状态包含 `[x,y,z]`。`epoch_jd`、`duration_days`、`gravitational_constant` 随项目保存。修改质量、位置或速度后是基于该时间窗口的 DIY 变体，不再对应原始天文轨迹。
+旧项目的 `[x,y]` 位置、速度继续可读，缺失的 z 默认为 0；新保存的状态包含 `[x,y,z]`。`epoch_jd`、`duration_days`、`gravitational_constant` 随项目保存。年度项目的时长必须大于 0 且不超过 365 个 TDB 日，超范围文件在加载时报告错误；理论模式仍支持原有的模拟时长。修改质量、位置或速度后是基于该时间窗口的 DIY 变体，不再对应原始天文轨迹。
 
 ## 数据和单位
 

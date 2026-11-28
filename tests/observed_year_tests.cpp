@@ -3,6 +3,7 @@
 #include "planet_sandbox/renderer.h"
 #include "planet_sandbox/demo_presets.h"
 #include "planet_sandbox/impact_visual.h"
+#include <nlohmann/json.hpp>
 #ifdef NDEBUG
 #error Assertions must be enabled
 #endif
@@ -20,6 +21,18 @@ namespace {
 int main() {
     const auto project = make_observed_year_project();
     validate_project(project);
+    // Dated files must be rejected before a reference simulation can overrun its year.
+    std::ostringstream valid_document;
+    write_project(valid_document, project);
+    for (double duration : {365.5, 366.0, 100000.0}) {
+        auto document = nlohmann::json::parse(valid_document.str());
+        document["duration_days"] = duration;
+        std::istringstream file(document.dump());
+        bool duration_rejected = false;
+        try { read_project(file); }
+        catch (const std::invalid_argument&) { duration_rejected = true; }
+        assert(duration_rejected);
+    }
     assert(simulation_calendar_date(project, 0) == "2025-11-28");
     assert(simulation_calendar_date(project, 365) == "2026-11-28");
     assert(simulation_calendar_date(project, 92) == "2026-02-28");

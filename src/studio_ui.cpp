@@ -1601,7 +1601,8 @@ void start_studio_simulation_mode(StudioState& state, StudioSimulationMode mode)
     if (state.session.mode() == SessionMode::Simulate) state.session.return_to_design();
     state.compare_baseline = state.compare_design = state.compare_modes = state.inspect_pixel = false;
     state.design_view = false;
-    if (real || was_real) {
+    // Starting the current mode must preserve loaded and edited initial conditions.
+    if (real != was_real) {
         const auto current = state.session.project();
         if (!was_real) state.theoretical_project = current;
         auto next = real ? make_observed_year_project()

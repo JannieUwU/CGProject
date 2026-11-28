@@ -189,6 +189,8 @@ void validate_project(const Project& project) {
         project.epoch_jd < 0 || project.duration_days < 0 || project.duration_days > 100000 ||
         ((project.epoch_jd > 0) != (project.duration_days > 0)))
         throw std::invalid_argument("Invalid epoch, duration or gravitational constant");
+    if (project.duration_days > 365.0)
+        throw std::invalid_argument("Dated projects support at most 365 TDB days");
     std::set<std::string> ids;
     if (project.solar_system && project.bodies.size() != 9) {
         throw std::invalid_argument("Solar system must contain the Sun and eight planets");
